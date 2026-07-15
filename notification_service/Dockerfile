@@ -1,0 +1,24 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy and install shared library first
+COPY shared /app/shared
+RUN pip install --no-cache-dir -e /app/shared
+
+# Copy service code
+COPY notification_service /app/notification_service
+
+# Install service-specific dependencies
+WORKDIR /app/notification_service
+RUN pip install --no-cache-dir -r requirements.txt
+
+EXPOSE 8011
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8011"]
