@@ -1,0 +1,274 @@
+version: "3.8"
+
+services:
+  # Infrastructure
+  postgres:
+    image: postgres:15-alpine
+    container_name: creditflow_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres_secure_pass_2026}
+      POSTGRES_DB: ${POSTGRES_DB:-creditflow_main}
+      POSTGRES_MULTIPLE_DATABASES: auth_db,user_db,billing_db,credits_db,usage_db,ai_db,content_db,scheduler_db,social_db,notification_db,admin_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
+    networks:
+      - creditflow_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: creditflow_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - creditflow_network
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: creditflow_rabbitmq
+    restart: always
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-guest}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - creditflow_network
+
+  mongodb:
+    image: mongo:6-jammy
+    container_name: creditflow_mongodb
+    restart: always
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-mongo_admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASS:-mongo_secure_pass_2026}
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - creditflow_network
+
+  # Services
+  api_gateway:
+    build:
+      context: .
+      dockerfile: api_gateway/Dockerfile
+    container_name: creditflow_api_gateway
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - rabbitmq
+    networks:
+      - creditflow_network
+
+  auth_service:
+    build:
+      context: .
+      dockerfile: auth_service/Dockerfile
+    container_name: creditflow_auth_service
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - creditflow_network
+
+  user_service:
+    build:
+      context: .
+      dockerfile: user_service/Dockerfile
+    container_name: creditflow_user_service
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - rabbitmq
+    networks:
+      - creditflow_network
+
+  billing_service:
+    build:
+      context: .
+      dockerfile: billing_service/Dockerfile
+    container_name: creditflow_billing_service
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - rabbitmq
+    networks:
+      - creditflow_network
+
+  credits_service:
+    build:
+      context: .
+      dockerfile: credits_service/Dockerfile
+    container_name: creditflow_credits_service
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - rabbitmq
+    networks:
+      - creditflow_network
+
+  usage_service:
+    build:
+      context: .
+      dockerfile: usage_service/Dockerfile
+    container_name: creditflow_usage_service
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - redis
+      - rabbitmq
+    networks:
+      - creditflow_network
+
+  ai_service:
+    build:
+      context: .
+      dockerfile: ai_service/Dockerfile
+    container_name: creditflow_ai_service
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - redis
+      - rabbitmq
+    networks:
+      - creditflow_network
+
+  content_service:
+    build:
+      context: .
+      dockerfile: content_service/Dockerfile
+    container_name: creditflow_content_service
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - rabbitmq
+    networks:
+      - creditflow_network
+
+  scheduler_service:
+    build:
+      context: .
+      dockerfile: scheduler_service/Dockerfile
+    container_name: creditflow_scheduler_service
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - redis
+      - rabbitmq
+    networks:
+      - creditflow_network
+
+  scheduler_worker:
+    build:
+      context: .
+      dockerfile: scheduler_service/Dockerfile
+    container_name: creditflow_scheduler_worker
+    command: celery -A core.celery worker --beat --loglevel=info
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - postgres
+      - rabbitmq
+    networks:
+      - creditflow_network
+
+  social_service:
+    build:
+      context: .
+      dockerfile: social_service/Dockerfile
+    container_name: creditflow_social_service
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - rabbitmq
+    networks:
+      - creditflow_network
+
+  scraper_service:
+    build:
+      context: .
+      dockerfile: scraper_service/Dockerfile
+    container_name: creditflow_scraper_service
+    env_file:
+      - .env
+    depends_on:
+      - mongodb
+      - rabbitmq
+    networks:
+      - creditflow_network
+
+  notification_service:
+    build:
+      context: .
+      dockerfile: notification_service/Dockerfile
+    container_name: creditflow_notification_service
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - rabbitmq
+    networks:
+      - creditflow_network
+
+  admin_service:
+    build:
+      context: .
+      dockerfile: admin_service/Dockerfile
+    container_name: creditflow_admin_service
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - redis
+      - rabbitmq
+    networks:
+      - creditflow_network
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: creditflow_frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api_gateway
+    networks:
+      - creditflow_network
+
+networks:
+  creditflow_network:
+    name: creditflow_network
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
+  mongodb_data:
