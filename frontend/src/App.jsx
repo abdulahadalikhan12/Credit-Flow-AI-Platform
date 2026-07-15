@@ -1,0 +1,1525 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  LayoutDashboard, FileText, Calendar as CalendarIcon, Users, CreditCard, 
+  ShoppingBag, Shield, LogOut, CheckCircle2, AlertTriangle, Play, Image as ImageIcon,
+  Clock, Plus, RefreshCw, X, User, ChevronDown, Trash2, Send, Search, Sparkles
+} from 'lucide-react';
+
+const API_BASE = 'http://localhost:8000/api/v1';
+
+export default function App() {
+  // Navigation & Auth State
+  const [token, setToken] = useState(localStorage.getItem('token') || '');
+  const [user, setUser] = useState(null);
+  const [currentAccount, setCurrentAccount] = useState(null);
+  const [accounts, setAccounts] = useState([]);
+  const [currentPage, setCurrentPage] = useState('home'); // home, login, signup, dashboard, etc.
+  
+  // UI States
+  const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
+  const [showAccountDropdown, setShowAccountDropdown] = useState(false);
+  
+  // Forms state
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState('member');
+  const [otpToken, setOtpToken] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  
+  const [prompt, setPrompt] = useState('');
+  const [aiModel, setAiModel] = useState('gemini');
+  const [aiImageModel, setAiImageModel] = useState('flux');
+  const [generatedText, setGeneratedText] = useState('');
+  const [generatedImageUrl, setGeneratedImageUrl] = useState('');
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [contentTitle, setContentTitle] = useState('');
+  
+  // Content & Calendar State
+  const [posts, setPosts] = useState([]);
+  const [selectedPostId, setSelectedPostId] = useState('');
+  const [scheduleDate, setScheduleDate] = useState('');
+  const [repeatCadence, setRepeatCadence] = useState('none');
+  const [calendarPosts, setCalendarPosts] = useState([]);
+  
+  // Billing & Marketplace State
+  const [balance, setBalance] = useState(0);
+  const [ledger, setLedger] = useState([]);
+  const [invoices, setInvoices] = useState([]);
+  const [marketListings, setMarketListings] = useState([]);
+  const [sellCreditsAmount, setSellCreditsAmount] = useState(10);
+  const [sellCreditsPrice, setSellCreditsPrice] = useState(100); // in cents
+  
+  // Team State
+  const [members, setMembers] = useState([]);
+  
+  // Admin State
+  const [activeSessions, setActiveSessions] = useState([]);
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [auditSearch, setAuditSearch] = useState('');
+
+  // Handle auto email verification via URL query parameter click
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tokenParam = params.get('token');
+    if (tokenParam) {
+      window.history.replaceState({}, document.title, window.location.pathname);
+      const verifyToken = async () => {
+        setError('');
+        setInfo('Verifying email...');
+        try {
+          const res = await fetch(`${API_BASE}/auth/verify-email`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: tokenParam })
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || 'Verification failed');
+          setInfo('Email verified successfully! You can now log in.');
+          setCurrentPage('login');
+        } catch (err) {
+          setError(err.message);
+          setInfo('');
+        }
+      };
+      verifyToken();
+    }
+  }, []);
+
+  // Extract User Profile from JWT (Base64 decode payload)
+  useEffect(() => {
+    if (token) {
+      try {
+        const payload = JSON.parse(atob(token.split('.')[1]));
+        setUser({
+          user_id: payload.user_id,
+          email: payload.email || 'user@local.dev',
+          role: payload.role
+        });
+        localStorage.setItem('token', token);
+        fetchUserAccounts();
+      } catch (e) {
+        console.error("Token decoding error", e);
+        handleLogout();
+      }
+    } else {
+      setUser(null);
+      setCurrentAccount(null);
+      setAccounts([]);
+      localStorage.removeItem('token');
+      localStorage.removeItem('refresh_token');
+      if (currentPage !== 'signup' && currentPage !== 'forgot-password') {
+        setCurrentPage('home');
+      }
+    }
+  }, [token]);
+
+  // Sync details on active workspace switch
+  useEffect(() => {
+    if (currentAccount && token) {
+      fetchDashboardData();
+    }
+  }, [currentAccount]);
+
+  // Request Headers Helper
+  const getHeaders = () => {
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    };
+    return headers;
+  };
+
+  // Auth Operations
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setError('');
+    try {
+      const res = await fetch(`${API_BASE}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Login failed');
+      localStorage.setItem('refresh_token', data.refresh_token);
+      setToken(data.access_token);
+      setCurrentPage('dashboard');
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleSignup = async (e) => {
+    e.preventDefault();
+    setError('');
+    try {
+      const res = await fetch(`${API_BASE}/auth/signup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Signup failed');
+      setInfo('Signup successful! Please check your email or click below to simulate verification.');
+      // Auto fill token with verification simulation
+      setOtpToken(data.id); // for direct link verification simulation
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const simulateVerification = async () => {
+    setError('');
+    try {
+      const res = await fetch(`${API_BASE}/auth/verify-email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: otpToken })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Verification failed');
+      setInfo('Email verified successfully! You can now log in.');
+      setCurrentPage('login');
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleForgotPassword = async (e) => {
+    e.preventDefault();
+    setError('');
+    try {
+      const res = await fetch(`${API_BASE}/auth/forgot-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail);
+      setInfo('Password reset code (OTP) sent to your email.');
+      setCurrentPage('reset-password');
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleResetPassword = async (e) => {
+    e.preventDefault();
+    setError('');
+    try {
+      const res = await fetch(`${API_BASE}/auth/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, token: otpToken, new_password: newPassword })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail);
+      setInfo('Password updated successfully! Please log in.');
+      setCurrentPage('login');
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('refresh_token');
+    setToken('');
+    setUser(null);
+    setCurrentAccount(null);
+    setCurrentPage('home');
+  };
+
+  // Switch Workspace Account
+  const handleAccountSwitch = async (acc) => {
+    setError('');
+    const refreshToken = localStorage.getItem('refresh_token') || '';
+    try {
+      const res = await fetch(`${API_BASE}/auth/switch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id: acc.account_id, refresh_token: refreshToken })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Switching workspace failed');
+      
+      localStorage.setItem('token', data.access_token);
+      localStorage.setItem('refresh_token', data.refresh_token);
+      setToken(data.access_token);
+      setCurrentAccount(acc);
+      setShowAccountDropdown(false);
+      setInfo(`Switched workspace to ${acc.name}`);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  // API Fetches
+  const fetchUserAccounts = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/accounts/switch`, { headers: getHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        setAccounts(data);
+        if (data.length > 0 && !currentAccount) {
+          setCurrentAccount(data[0]);
+        }
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const fetchDashboardData = async () => {
+    if (!currentAccount) return;
+    fetchPosts();
+    fetchCreditsBalance();
+    fetchInvoices();
+    fetchMarketplaceListings();
+    fetchTeamMembers();
+    if (user?.role === 'superadmin' || currentAccount.role === 'owner') {
+      fetchAdminSessions();
+      fetchAuditLogs();
+    }
+  };
+
+  const fetchPosts = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/content`, { headers: getHeaders() });
+      if (res.ok) setPosts(await res.json());
+    } catch (e) { console.error(e); }
+  };
+
+  const fetchCreditsBalance = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/credits/balance`, { headers: getHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        setBalance(data.balance);
+        setLedger(data.ledger);
+      }
+    } catch (e) { console.error(e); }
+  };
+
+  const fetchInvoices = async () => {
+    if (currentAccount?.role !== 'owner') return;
+    try {
+      const res = await fetch(`${API_BASE}/billing/invoices`, { headers: getHeaders() });
+      if (res.ok) setInvoices(await res.json());
+    } catch (e) { console.error(e); }
+  };
+
+  const fetchMarketplaceListings = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/credits/marketplace/listings`, { headers: getHeaders() });
+      if (res.ok) setMarketListings(await res.json());
+    } catch (e) { console.error(e); }
+  };
+
+  const fetchTeamMembers = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/accounts/members`, { headers: getHeaders() });
+      if (res.ok) setMembers(await res.json());
+    } catch (e) { console.error(e); }
+  };
+
+  const fetchAdminSessions = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/admin/sessions`, { headers: getHeaders() });
+      if (res.ok) setActiveSessions(await res.json());
+    } catch (e) { console.error(e); }
+  };
+
+  const fetchAuditLogs = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/admin/audit-log`, { headers: getHeaders() });
+      if (res.ok) setAuditLogs(await res.json());
+    } catch (e) { console.error(e); }
+  };
+
+  // AI Content Generation (SSE Stream)
+  const triggerAiTextGeneration = async () => {
+    if (!prompt) return;
+    setError('');
+    setGeneratedText('');
+    setGeneratedImageUrl('');
+    setIsGenerating(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/ai/generate`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({ prompt, model: aiModel })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Generation failed');
+
+      const jobId = data.job_id;
+      // Connect to Gateway SSE Stream
+      const eventSource = new EventSource(`http://localhost:8000/api/v1/ai/stream/${jobId}`);
+      
+      eventSource.addEventListener('token', (e) => {
+        setGeneratedText((prev) => prev + e.data);
+      });
+
+      eventSource.addEventListener('done', () => {
+        eventSource.close();
+        setIsGenerating(false);
+        setInfo('AI text generation completed!');
+        fetchCreditsBalance();
+        fetchPosts(); // reload drafts
+      });
+
+      eventSource.addEventListener('error', (e) => {
+        eventSource.close();
+        setIsGenerating(false);
+        setError('Error streaming response from AI core.');
+      });
+
+    } catch (err) {
+      setError(err.message);
+      setIsGenerating(false);
+    }
+  };
+
+  // AI Image Generation
+  const triggerAiImageGeneration = async () => {
+    if (!prompt) return;
+    setError('');
+    setIsGenerating(true);
+    try {
+      const res = await fetch(`${API_BASE}/ai/generate-image`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({ prompt, model: aiImageModel })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail);
+      setGeneratedImageUrl(data.image_url);
+      setInfo('AI image generated successfully!');
+      fetchCreditsBalance();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  // Save draft post
+  const saveDraftPost = async () => {
+    if (!generatedText) return;
+    setError('');
+    try {
+      const res = await fetch(`${API_BASE}/content`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({
+          title: contentTitle || `AI Draft ${new Date().toLocaleDateString()}`,
+          body: generatedText,
+          image_url: generatedImageUrl || null
+        })
+      });
+      if (res.ok) {
+        setInfo('Draft post saved successfully!');
+        fetchPosts();
+      }
+    } catch (e) {
+      setError('Failed to save draft.');
+    }
+  };
+
+  // Upload Manual Image
+  const handleImageUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    setError('');
+    try {
+      const res = await fetch(`${API_BASE}/content/upload-image`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        body: formData
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setGeneratedImageUrl(data.image_url);
+        setInfo('Image uploaded successfully!');
+      }
+    } catch (err) {
+      setError('Image upload failed.');
+    }
+  };
+
+  // Scheduling Calendar
+  const handleSchedulePost = async (e) => {
+    e.preventDefault();
+    if (!selectedPostId || !scheduleDate) return;
+    setError('');
+    try {
+      const res = await fetch(`${API_BASE}/scheduler/schedule`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({
+          content_id: selectedPostId,
+          publish_at: new Date(scheduleDate).toISOString(),
+          repeat_cadence: repeatCadence
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail);
+      setInfo('Content scheduled successfully!');
+      fetchDashboardData();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  // Billing subscriptions Checkout
+  const handleUpgradeSubscription = async (tier) => {
+    setError('');
+    try {
+      const res = await fetch(`${API_BASE}/billing/checkout`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({ plan_tier: tier })
+      });
+      const data = await res.json();
+      if (res.ok && data.checkout_url) {
+        // Redirect to Stripe checkout page
+        window.location.href = data.checkout_url;
+      }
+    } catch (e) {
+      setError('Subscription checkout failed.');
+    }
+  };
+
+  // Marketplace Sell Credits
+  const handleListCredits = async (e) => {
+    e.preventDefault();
+    setError('');
+    try {
+      const res = await fetch(`${API_BASE}/credits/marketplace/list`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({ amount: sellCreditsAmount, price: sellCreditsPrice })
+      });
+      if (res.ok) {
+        setInfo('Credits listed for sale in marketplace!');
+        fetchCreditsBalance();
+        fetchMarketplaceListings();
+      }
+    } catch (e) {
+      setError('Failed to list credits.');
+    }
+  };
+
+  // Marketplace Buy Credits
+  const handleBuyCredits = async (listingId) => {
+    setError('');
+    try {
+      const res = await fetch(`${API_BASE}/credits/marketplace/buy/${listingId}`, {
+        method: 'POST',
+        headers: getHeaders()
+      });
+      if (res.ok) {
+        setInfo('Credits purchased successfully!');
+        fetchCreditsBalance();
+        fetchMarketplaceListings();
+      }
+    } catch (e) {
+       setError('Purchase failed.');
+    }
+  };
+
+  // Team Invite Member
+  const handleInviteMember = async (e) => {
+    e.preventDefault();
+    setError('');
+    try {
+      const res = await fetch(`${API_BASE}/accounts/invite`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({ email: inviteEmail, role: inviteRole })
+      });
+      if (res.ok) {
+        setInfo('Invitation sent successfully!');
+        setInviteEmail('');
+      }
+    } catch (e) {
+      setError('Failed to send invitation.');
+    }
+  };
+
+  // Admin Sessions Revoke
+  const handleRevokeSession = async (jti) => {
+    try {
+      const res = await fetch(`${API_BASE}/admin/sessions/${jti}`, {
+        method: 'DELETE',
+        headers: getHeaders()
+      });
+      if (res.ok) {
+        setInfo('Session revoked successfully.');
+        fetchAdminSessions();
+      }
+    } catch (e) { console.error(e); }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
+      {/* HEADER BAR */}
+      <header className="border-b border-slate-800 bg-slate-900/60 backdrop-blur-md sticky top-0 z-50 px-6 py-4 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <Sparkles className="h-7 w-7 text-indigo-500 animate-pulse" />
+          <h1 className="text-xl font-bold tracking-wider bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">
+            CreditFlow AI
+          </h1>
+        </div>
+
+        {user && (
+          <div className="flex items-center gap-4">
+            {/* Account Switcher */}
+            <div className="relative">
+              <button 
+                onClick={() => setShowAccountDropdown(!showAccountDropdown)}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 transition"
+              >
+                <span>{currentAccount?.name || 'Workspace'}</span>
+                <span className="text-xs uppercase bg-indigo-900/80 px-2 py-0.5 rounded text-indigo-300">
+                  {currentAccount?.plan_tier}
+                </span>
+                <ChevronDown className="h-4 w-4 text-slate-400" />
+              </button>
+
+              {showAccountDropdown && (
+                <div className="absolute right-0 mt-2 w-64 rounded-xl border border-slate-800 bg-slate-900 p-2 shadow-2xl z-50">
+                  <div className="px-3 py-1.5 text-xs text-slate-500 font-semibold border-b border-slate-800 mb-2">
+                    Switch Workspace
+                  </div>
+                  {accounts.map((acc) => (
+                    <button
+                      key={acc.account_id}
+                      onClick={() => handleAccountSwitch(acc)}
+                      className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-left text-sm transition hover:bg-slate-800 ${
+                        currentAccount?.account_id === acc.account_id ? 'bg-indigo-950/40 text-indigo-400' : ''
+                      }`}
+                    >
+                      <span className="truncate">{acc.name}</span>
+                      <span className="text-xs text-slate-500">{acc.role}</span>
+                    </button>
+                  ))}
+                  <div className="border-t border-slate-800 mt-2 pt-2">
+                    <button 
+                      onClick={() => setCurrentPage('create-team')}
+                      className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left text-sm text-indigo-400 hover:bg-slate-800"
+                    >
+                      <Plus className="h-4 w-4" />
+                      Create Team Workspace
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Profile & Logout */}
+            <div className="flex items-center gap-3 pl-4 border-l border-slate-800">
+              <span className="text-sm text-slate-400 truncate max-w-[150px]">{user.email}</span>
+              <button 
+                onClick={handleLogout}
+                className="p-2 rounded-lg bg-slate-800 text-red-400 hover:bg-red-950/20 hover:text-red-300 border border-slate-700 transition"
+              >
+                <LogOut className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        )}
+      </header>
+
+      {/* CORE WORKSPACE CONTENT */}
+      <div className="flex flex-1">
+        {/* SIDE NAVIGATION */}
+        {user && (
+          <aside className="w-64 border-r border-slate-800 bg-slate-900/30 p-4 flex flex-col gap-2">
+            <button
+              onClick={() => setCurrentPage('dashboard')}
+              className={`flex items-center gap-3 px-4 py-3 rounded-xl transition ${
+                currentPage === 'dashboard' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'hover:bg-slate-800 text-slate-400'
+              }`}
+            >
+              <LayoutDashboard className="h-5 w-5" />
+              Dashboard
+            </button>
+            <button
+              onClick={() => setCurrentPage('content-studio')}
+              className={`flex items-center gap-3 px-4 py-3 rounded-xl transition ${
+                currentPage === 'content-studio' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'hover:bg-slate-800 text-slate-400'
+              }`}
+            >
+              <FileText className="h-5 w-5" />
+              Content Studio
+            </button>
+            <button
+              onClick={() => setCurrentPage('calendar')}
+              className={`flex items-center gap-3 px-4 py-3 rounded-xl transition ${
+                currentPage === 'calendar' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'hover:bg-slate-800 text-slate-400'
+              }`}
+            >
+              <CalendarIcon className="h-5 w-5" />
+              Scheduler
+            </button>
+            <button
+              onClick={() => setCurrentPage('marketplace')}
+              className={`flex items-center gap-3 px-4 py-3 rounded-xl transition ${
+                currentPage === 'marketplace' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'hover:bg-slate-800 text-slate-400'
+              }`}
+            >
+              <ShoppingBag className="h-5 w-5" />
+              Marketplace
+            </button>
+            {currentAccount?.role === 'owner' && (
+              <button
+                onClick={() => setCurrentPage('billing')}
+                className={`flex items-center gap-3 px-4 py-3 rounded-xl transition ${
+                  currentPage === 'billing' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'hover:bg-slate-800 text-slate-400'
+                }`}
+              >
+                <CreditCard className="h-5 w-5" />
+                Billing
+              </button>
+            )}
+            <button
+              onClick={() => setCurrentPage('team')}
+              className={`flex items-center gap-3 px-4 py-3 rounded-xl transition ${
+                currentPage === 'team' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'hover:bg-slate-800 text-slate-400'
+              }`}
+            >
+              <Users className="h-5 w-5" />
+              Team Management
+            </button>
+
+            {/* Admin console links */}
+            {user.role === 'superadmin' && (
+              <div className="mt-8 pt-6 border-t border-slate-800 flex flex-col gap-2">
+                <span className="px-4 text-xs font-bold text-slate-500 uppercase tracking-widest">
+                  Admin Console
+                </span>
+                <button
+                  onClick={() => setCurrentPage('admin-sessions')}
+                  className={`flex items-center gap-3 px-4 py-3 rounded-xl transition ${
+                    currentPage === 'admin-sessions' ? 'bg-purple-600 text-white' : 'hover:bg-slate-800 text-slate-400'
+                  }`}
+                >
+                  <Shield className="h-5 w-5" />
+                  Active Sessions
+                </button>
+                <button
+                  onClick={() => setCurrentPage('admin-audit')}
+                  className={`flex items-center gap-3 px-4 py-3 rounded-xl transition ${
+                    currentPage === 'admin-audit' ? 'bg-purple-600 text-white' : 'hover:bg-slate-800 text-slate-400'
+                  }`}
+                >
+                  <Clock className="h-5 w-5" />
+                  Audit Trail
+                </button>
+              </div>
+            )}
+          </aside>
+        )}
+
+        {/* MAIN BODY WINDOW */}
+        <main className="flex-1 p-8 overflow-y-auto max-w-7xl mx-auto w-full">
+          {/* Notifications */}
+          {error && (
+            <div className="mb-6 p-4 rounded-xl border border-red-800/40 bg-red-950/20 text-red-300 flex items-center gap-3">
+              <AlertTriangle className="h-5 w-5" />
+              <span>{error}</span>
+            </div>
+          )}
+          {info && (
+            <div className="mb-6 p-4 rounded-xl border border-emerald-800/40 bg-emerald-950/20 text-emerald-300 flex items-center gap-3">
+              <CheckCircle2 className="h-5 w-5" />
+              <span>{info}</span>
+              <button onClick={() => setInfo('')} className="ml-auto text-slate-400 hover:text-slate-200">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+
+          {/* PAGE ROUTER CONTROLLER */}
+          {currentPage === 'home' && (
+            <div className="py-20 text-center max-w-3xl mx-auto flex flex-col items-center">
+              <Sparkles className="h-16 w-16 text-indigo-500 mb-6 animate-bounce" />
+              <h2 className="text-5xl font-extrabold tracking-tight mb-4 bg-gradient-to-r from-white via-indigo-200 to-indigo-400 bg-clip-text text-transparent">
+                Asynchronous, Multi-Tenant AI Content Publisher
+              </h2>
+              <p className="text-slate-400 text-lg mb-8 leading-relaxed">
+                Unlock automated streaming completions, versioned drafts, marketplace peer-to-peer credit trading, and scheduled publishing straight to LinkedIn.
+              </p>
+              <div className="flex gap-4">
+                <button 
+                  onClick={() => setCurrentPage('login')}
+                  className="px-8 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 font-semibold transition"
+                >
+                  Log In
+                </button>
+                <button 
+                  onClick={() => setCurrentPage('signup')}
+                  className="px-8 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 font-semibold transition"
+                >
+                  Register Account
+                </button>
+              </div>
+            </div>
+          )}
+
+          {currentPage === 'login' && (
+            <div className="max-w-md mx-auto bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-2xl">
+              <h2 className="text-2xl font-bold mb-6 text-center">Log In to CreditFlow</h2>
+              <form onSubmit={handleLogin} className="flex flex-col gap-4">
+                <div>
+                  <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">Email</label>
+                  <input 
+                    type="email" 
+                    required 
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 focus:border-indigo-500 outline-none"
+                    placeholder="you@email.com"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">Password</label>
+                  <input 
+                    type="password" 
+                    required 
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 focus:border-indigo-500 outline-none"
+                  />
+                </div>
+                <button 
+                  type="submit" 
+                  className="mt-2 bg-indigo-600 hover:bg-indigo-500 font-semibold rounded-lg py-2.5 transition"
+                >
+                  Log In
+                </button>
+              </form>
+              <div className="mt-4 text-center text-sm text-slate-500 flex flex-col gap-2">
+                <button onClick={() => setCurrentPage('forgot-password')} className="text-indigo-400 hover:underline">
+                  Forgot Password?
+                </button>
+                <span>Don't have an account? <button onClick={() => setCurrentPage('signup')} className="text-indigo-400 hover:underline">Sign up</button></span>
+              </div>
+            </div>
+          )}
+
+          {currentPage === 'signup' && (
+            <div className="max-w-md mx-auto bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-2xl">
+              <h2 className="text-2xl font-bold mb-6 text-center">Create your Account</h2>
+              <form onSubmit={handleSignup} className="flex flex-col gap-4">
+                <div>
+                  <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">Email</label>
+                  <input 
+                    type="email" 
+                    required 
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 focus:border-indigo-500 outline-none"
+                    placeholder="you@email.com"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">Password (6+ chars)</label>
+                  <input 
+                    type="password" 
+                    required 
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 focus:border-indigo-500 outline-none"
+                  />
+                </div>
+                <button 
+                  type="submit" 
+                  className="mt-2 bg-indigo-600 hover:bg-indigo-500 font-semibold rounded-lg py-2.5 transition"
+                >
+                  Sign Up
+                </button>
+              </form>
+              {otpToken && (
+                <div className="mt-6 border-t border-slate-800 pt-4 flex flex-col gap-3">
+                  <span className="text-xs text-indigo-300 block">
+                    [Sandbox Link Verification]: Auto-extracted verification code:
+                  </span>
+                  <input 
+                    type="text" 
+                    value={otpToken} 
+                    onChange={(e) => setOtpToken(e.target.value)}
+                    className="bg-slate-950 border border-slate-800 text-xs text-slate-400 p-2 rounded"
+                  />
+                  <button 
+                    onClick={simulateVerification}
+                    className="bg-emerald-600 hover:bg-emerald-500 font-semibold text-xs py-2 rounded transition"
+                  >
+                    Complete Sandbox Verification Link Click
+                  </button>
+                </div>
+              )}
+              <div className="mt-4 text-center text-sm text-slate-500">
+                Already have an account? <button onClick={() => setCurrentPage('login')} className="text-indigo-400 hover:underline">Log in</button>
+              </div>
+            </div>
+          )}
+
+          {currentPage === 'forgot-password' && (
+            <div className="max-w-md mx-auto bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-2xl">
+              <h2 className="text-2xl font-bold mb-6 text-center">Forgot Password</h2>
+              <form onSubmit={handleForgotPassword} className="flex flex-col gap-4">
+                <div>
+                  <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">Email</label>
+                  <input 
+                    type="email" 
+                    required 
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 focus:border-indigo-500 outline-none"
+                  />
+                </div>
+                <button 
+                  type="submit" 
+                  className="mt-2 bg-indigo-600 hover:bg-indigo-500 font-semibold rounded-lg py-2.5 transition"
+                >
+                  Send OTP Code
+                </button>
+              </form>
+            </div>
+          )}
+
+          {currentPage === 'reset-password' && (
+            <div className="max-w-md mx-auto bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-2xl">
+              <h2 className="text-2xl font-bold mb-6 text-center">Reset Password</h2>
+              <form onSubmit={handleResetPassword} className="flex flex-col gap-4">
+                <div>
+                  <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">Verification OTP</label>
+                  <input 
+                    type="text" 
+                    required 
+                    value={otpToken}
+                    onChange={(e) => setOtpToken(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 focus:border-indigo-500 outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">New Password</label>
+                  <input 
+                    type="password" 
+                    required 
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 focus:border-indigo-500 outline-none"
+                  />
+                </div>
+                <button 
+                  type="submit" 
+                  className="mt-2 bg-indigo-600 hover:bg-indigo-500 font-semibold rounded-lg py-2.5 transition"
+                >
+                  Update Password
+                </button>
+              </form>
+            </div>
+          )}
+
+          {currentPage === 'dashboard' && (
+            <div className="flex flex-col gap-8">
+              {/* Workspace Header Cards */}
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 flex flex-col gap-2">
+                  <span className="text-xs uppercase text-slate-500 font-semibold">Active Plan</span>
+                  <span className="text-3xl font-extrabold text-indigo-400 capitalize">{currentAccount?.plan_tier}</span>
+                </div>
+                <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 flex flex-col gap-2">
+                  <span className="text-xs uppercase text-slate-500 font-semibold">Credits Balance</span>
+                  <span className="text-3xl font-extrabold text-emerald-400">{balance} credits</span>
+                </div>
+                <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 flex flex-col gap-2">
+                  <span className="text-xs uppercase text-slate-500 font-semibold">Draft Posts</span>
+                  <span className="text-3xl font-extrabold text-blue-400">{posts.length}</span>
+                </div>
+                <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 flex flex-col gap-2">
+                  <span className="text-xs uppercase text-slate-500 font-semibold">Team Members</span>
+                  <span className="text-3xl font-extrabold text-purple-400">{members.length}</span>
+                </div>
+              </div>
+
+              {/* Sandbox integrations simulation alerts */}
+              <div className="bg-indigo-950/20 border border-indigo-800/40 rounded-2xl p-6">
+                <h3 className="text-lg font-bold mb-2 flex items-center gap-2">
+                  <Sparkles className="h-5 w-5 text-indigo-400" />
+                  Social Connection: LinkedIn OAuth Sandbox Simulation
+                </h3>
+                <p className="text-slate-400 text-sm mb-4">
+                  Connect your simulated LinkedIn developer portal. In mock mode, posts are printed directly to the system logs and saved as successful UGC shares.
+                </p>
+                <button
+                  onClick={async () => {
+                    const res = await fetch(`${API_BASE}/social/connect/linkedin`, { headers: getHeaders() });
+                    const data = await res.json();
+                    if (data.authorization_url) window.location.href = data.authorization_url;
+                  }}
+                  className="bg-indigo-600 hover:bg-indigo-500 font-semibold rounded-lg px-6 py-2.5 transition text-sm"
+                >
+                  Connect LinkedIn Workspace Account
+                </button>
+              </div>
+
+              {/* Draft Posts Log */}
+              <div>
+                <h3 className="text-lg font-bold mb-4">Recent Draft Content</h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  {posts.map((post) => (
+                    <div key={post.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col justify-between">
+                      <div>
+                        <span className="text-xs uppercase font-bold px-2 py-0.5 rounded bg-indigo-900/50 text-indigo-400 inline-block mb-3">
+                          {post.status}
+                        </span>
+                        <h4 className="font-bold text-lg mb-2">{post.title}</h4>
+                        <p className="text-slate-400 text-sm line-clamp-3 mb-4">{post.body}</p>
+                      </div>
+                      <div className="flex gap-2 border-t border-slate-800 pt-4">
+                        <button 
+                          onClick={() => {
+                            setSelectedPostId(post.id);
+                            setCurrentPage('calendar');
+                          }}
+                          className="flex-1 bg-slate-800 hover:bg-slate-700 text-xs font-semibold py-2 rounded-lg text-center transition"
+                        >
+                          Schedule Post
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {posts.length === 0 && (
+                    <p className="text-slate-500 italic text-sm">No content drafts. Head to the Content Studio to generate some!</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {currentPage === 'content-studio' && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              {/* Left Column: Generator Controls */}
+              <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-8 flex flex-col gap-6">
+                <h3 className="text-xl font-bold flex items-center gap-2 text-indigo-400">
+                  <Sparkles className="h-5 w-5" />
+                  Content Studio
+                </h3>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">AI Text Model</label>
+                    <select 
+                      value={aiModel} 
+                      onChange={(e) => setAiModel(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 focus:border-indigo-500 outline-none"
+                    >
+                      <option value="gemini">Gemini 2.5 Flash (1 Cr)</option>
+                      <option value="llama">Llama 3 8B (1 Cr)</option>
+                      <option value="mistral">Mistral 7B (1 Cr)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">AI Image Model</label>
+                    <select 
+                      value={aiImageModel} 
+                      onChange={(e) => setAiImageModel(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 focus:border-indigo-500 outline-none"
+                    >
+                      <option value="flux">Flux (High Quality)</option>
+                      <option value="turbo">Turbo (Fast)</option>
+                      <option value="anime">Anime (Artistic)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">Title</label>
+                  <input 
+                    type="text" 
+                    value={contentTitle} 
+                    onChange={(e) => setContentTitle(e.target.value)}
+                    placeholder="Enter draft title (optional)"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 focus:border-indigo-500 outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">Prompt</label>
+                  <textarea 
+                    value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)}
+                    rows={6}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 focus:border-indigo-500 outline-none resize-none"
+                    placeholder="Describe what you want to write or generate..."
+                  />
+                </div>
+
+                <div className="flex gap-4">
+                  <button 
+                    onClick={triggerAiTextGeneration}
+                    disabled={isGenerating}
+                    className="flex-1 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-800 font-semibold rounded-lg py-2.5 transition flex items-center justify-center gap-2"
+                  >
+                    <Play className="h-4 w-4" />
+                    {isGenerating ? 'Streaming...' : 'Generate Text'}
+                  </button>
+
+                  <button 
+                    onClick={triggerAiImageGeneration}
+                    disabled={isGenerating}
+                    className="flex-1 bg-slate-800 hover:bg-slate-700 disabled:bg-slate-800 font-semibold rounded-lg py-2.5 border border-slate-700 transition flex items-center justify-center gap-2"
+                  >
+                    <ImageIcon className="h-4 w-4" />
+                    Generate Image (10 Cr)
+                  </button>
+                </div>
+
+                <div className="border-t border-slate-800 pt-4">
+                  <label className="text-xs uppercase text-slate-500 font-semibold block mb-2">Or Upload Image Manually</label>
+                  <input 
+                    type="file" 
+                    accept="image/*" 
+                    onChange={handleImageUpload}
+                    className="text-sm text-slate-500"
+                  />
+                </div>
+              </div>
+
+              {/* Right Column: Generation Outputs */}
+              <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-8 flex flex-col gap-6">
+                <h3 className="text-xl font-bold text-slate-400">Preview</h3>
+
+                {generatedImageUrl && (
+                  <div className="rounded-xl overflow-hidden border border-slate-800 aspect-video relative group bg-slate-950">
+                    <img src={generatedImageUrl} alt="AI output" className="w-full h-full object-cover" />
+                    <button 
+                      onClick={() => setGeneratedImageUrl('')}
+                      className="absolute top-2 right-2 p-1.5 rounded-full bg-slate-950/80 hover:bg-slate-900 text-slate-400 hover:text-slate-200"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                )}
+
+                <div className="flex-1 min-h-[250px] bg-slate-950 border border-slate-800 rounded-xl p-4 font-mono text-sm leading-relaxed overflow-y-auto whitespace-pre-wrap">
+                  {generatedText || <span className="text-slate-600 italic">No text generated yet.</span>}
+                </div>
+
+                {generatedText && (
+                  <button 
+                    onClick={saveDraftPost}
+                    className="bg-emerald-600 hover:bg-emerald-500 font-semibold rounded-lg py-2.5 transition"
+                  >
+                    Save draft as Post
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {currentPage === 'calendar' && (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              {/* Form to Schedule */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 h-fit flex flex-col gap-4">
+                <h3 className="text-lg font-bold">Schedule Content</h3>
+                <form onSubmit={handleSchedulePost} className="flex flex-col gap-4">
+                  <div>
+                    <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">Select Draft</label>
+                    <select 
+                      value={selectedPostId} 
+                      onChange={(e) => setSelectedPostId(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 outline-none"
+                    >
+                      <option value="">-- Choose Post --</option>
+                      {posts.map(p => (
+                        <option key={p.id} value={p.id}>{p.title}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">Publish Time</label>
+                    <input 
+                      type="datetime-local" 
+                      required 
+                      value={scheduleDate}
+                      onChange={(e) => setScheduleDate(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">Repeat Cadence (Mandatory Bonus)</label>
+                    <select 
+                      value={repeatCadence} 
+                      onChange={(e) => setRepeatCadence(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 outline-none"
+                    >
+                      <option value="none">One-off Post</option>
+                      <option value="daily">Daily Cadence</option>
+                      <option value="weekly">Weekly Cadence</option>
+                      <option value="monthly">Monthly Cadence</option>
+                    </select>
+                  </div>
+                  <button 
+                    type="submit" 
+                    className="bg-indigo-600 hover:bg-indigo-500 font-semibold py-2 rounded-lg transition"
+                  >
+                    Confirm Schedule
+                  </button>
+                </form>
+              </div>
+
+              {/* Simple Custom Calendar Grid */}
+              <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-6">
+                <h3 className="text-lg font-bold mb-4">Calendar Grid</h3>
+                <div className="grid grid-cols-7 gap-2 text-center text-xs font-semibold text-slate-500 uppercase mb-2">
+                  <div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div><div>Sun</div>
+                </div>
+                {/* Visual Representation of days */}
+                <div className="grid grid-cols-7 gap-2">
+                  {Array.from({ length: 30 }).map((_, i) => {
+                    const dayNum = i + 1;
+                    return (
+                      <div key={i} className="min-h-[80px] bg-slate-950 border border-slate-800 rounded-lg p-2 flex flex-col justify-between hover:border-slate-700 transition">
+                        <span className="text-xs font-bold text-slate-400">{dayNum}</span>
+                        {/* Dummy calendar indicators */}
+                        {dayNum === 15 && (
+                          <span className="bg-indigo-900/60 border border-indigo-800 text-[10px] text-indigo-300 p-0.5 rounded truncate">
+                            Scheduled Post
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {currentPage === 'marketplace' && (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              {/* Sell form */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 h-fit flex flex-col gap-4">
+                <h3 className="text-lg font-bold">Sell Credits</h3>
+                <form onSubmit={handleListCredits} className="flex flex-col gap-4">
+                  <div>
+                    <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">Amount to Sell</label>
+                    <input 
+                      type="number" 
+                      required 
+                      min={1} 
+                      value={sellCreditsAmount}
+                      onChange={(e) => setSellCreditsAmount(parseInt(e.target.value))}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">Price (in cents)</label>
+                    <input 
+                      type="number" 
+                      required 
+                      min={10} 
+                      value={sellCreditsPrice}
+                      onChange={(e) => setSellCreditsPrice(parseInt(e.target.value))}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 outline-none"
+                    />
+                  </div>
+                  <button 
+                    type="submit" 
+                    className="bg-indigo-600 hover:bg-indigo-500 font-semibold py-2 rounded-lg transition"
+                  >
+                    Post Listing
+                  </button>
+                </form>
+              </div>
+
+              {/* listings */}
+              <div className="lg:col-span-2 flex flex-col gap-6">
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+                  <h3 className="text-lg font-bold mb-4">Peer-to-Peer Marketplace listings</h3>
+                  <div className="flex flex-col gap-3">
+                    {marketListings.map((list) => (
+                      <div key={list.id} className="bg-slate-950 border border-slate-800 p-4 rounded-xl flex items-center justify-between">
+                        <div>
+                          <p className="font-semibold">{list.amount} Credits</p>
+                          <p className="text-xs text-slate-500">Seller: {list.seller_account_id}</p>
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <span className="text-emerald-400 font-extrabold">${(list.price / 100).toFixed(2)}</span>
+                          {list.seller_account_id !== currentAccount.account_id ? (
+                            <button 
+                              onClick={() => handleBuyCredits(list.id)}
+                              className="bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold px-4 py-2 rounded-lg transition"
+                            >
+                              Buy
+                            </button>
+                          ) : (
+                            <span className="text-xs text-slate-500 italic">Your Listing</span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    {marketListings.length === 0 && (
+                      <p className="text-slate-500 italic text-sm">No listings currently active on the market.</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {currentPage === 'billing' && (
+            <div className="flex flex-col gap-8">
+              {/* Pricing Cards */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {/* Free */}
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 flex flex-col justify-between">
+                  <div>
+                    <h4 className="font-bold text-xl mb-2">Free Plan</h4>
+                    <p className="text-slate-400 text-sm mb-6">100 monthly credits. Standard text completions.</p>
+                    <span className="text-3xl font-extrabold">$0</span><span className="text-slate-500 text-sm">/mo</span>
+                  </div>
+                  <button 
+                    disabled 
+                    className="mt-8 w-full bg-slate-800 text-slate-500 font-semibold py-2.5 rounded-lg border border-slate-700"
+                  >
+                    Current Tier
+                  </button>
+                </div>
+                {/* Pro */}
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 flex flex-col justify-between border-indigo-600/50 shadow-lg shadow-indigo-600/5">
+                  <div>
+                    <h4 className="font-bold text-xl mb-2 text-indigo-400">Pro Plan</h4>
+                    <p className="text-slate-400 text-sm mb-6">1,000 monthly credits. Fast & High Quality completions.</p>
+                    <span className="text-3xl font-extrabold">$19</span><span className="text-slate-500 text-sm">/mo</span>
+                  </div>
+                  <button 
+                    onClick={() => handleUpgradeSubscription('pro')}
+                    className="mt-8 w-full bg-indigo-600 hover:bg-indigo-500 font-semibold py-2.5 rounded-lg transition"
+                  >
+                    Upgrade Plan
+                  </button>
+                </div>
+                {/* Team */}
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 flex flex-col justify-between">
+                  <div>
+                    <h4 className="font-bold text-xl mb-2 text-purple-400">Team Plan</h4>
+                    <p className="text-slate-400 text-sm mb-6">5,000 monthly credits. Full multi-seat workspace controls.</p>
+                    <span className="text-3xl font-extrabold">$49</span><span className="text-slate-500 text-sm">/mo</span>
+                  </div>
+                  <button 
+                    onClick={() => handleUpgradeSubscription('team')}
+                    className="mt-8 w-full bg-indigo-600 hover:bg-indigo-500 font-semibold py-2.5 rounded-lg transition"
+                  >
+                    Upgrade Plan
+                  </button>
+                </div>
+              </div>
+
+              {/* Billing Invoice history */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+                <h3 className="text-lg font-bold mb-4">Payment Invoices</h3>
+                <div className="flex flex-col gap-2">
+                  {invoices.map((inv) => (
+                    <div key={inv.id} className="bg-slate-950 p-4 rounded-xl flex items-center justify-between border border-slate-800">
+                      <div>
+                        <p className="text-sm font-semibold">{inv.stripe_invoice_id}</p>
+                        <p className="text-xs text-slate-500">{new Date(inv.created_at).toLocaleDateString()}</p>
+                      </div>
+                      <div className="flex items-center gap-4">
+                        <span className="text-emerald-400 font-extrabold">${(inv.amount / 100).toFixed(2)}</span>
+                        <span className="text-xs uppercase bg-emerald-950 text-emerald-400 border border-emerald-900 px-2 py-0.5 rounded font-bold">
+                          {inv.status}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                  {invoices.length === 0 && (
+                    <p className="text-slate-500 italic text-sm">No payment history found.</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {currentPage === 'team' && (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              {/* Invite member */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 h-fit flex flex-col gap-4">
+                <h3 className="text-lg font-bold">Invite Member</h3>
+                <form onSubmit={handleInviteMember} className="flex flex-col gap-4">
+                  <div>
+                    <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">Email Address</label>
+                    <input 
+                      type="email" 
+                      required 
+                      value={inviteEmail}
+                      onChange={(e) => setInviteEmail(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">Workspace Role</label>
+                    <select 
+                      value={inviteRole} 
+                      onChange={(e) => setInviteRole(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 outline-none"
+                    >
+                      <option value="member">Workspace Member</option>
+                      <option value="admin">Workspace Admin</option>
+                    </select>
+                  </div>
+                  <button 
+                    type="submit" 
+                    className="bg-indigo-600 hover:bg-indigo-500 font-semibold py-2 rounded-lg transition"
+                  >
+                    Send Invitation
+                  </button>
+                </form>
+              </div>
+
+              {/* Members listing */}
+              <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-6">
+                <h3 className="text-lg font-bold mb-4">Workspace Members</h3>
+                <div className="flex flex-col gap-3">
+                  {members.map((member) => (
+                    <div key={member.id} className="bg-slate-950 p-4 rounded-xl flex items-center justify-between border border-slate-800">
+                      <div>
+                        <p className="font-semibold text-sm">User ID: {member.user_id}</p>
+                        <p className="text-xs text-slate-500">Joined: {new Date(member.created_at).toLocaleDateString()}</p>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs font-bold uppercase bg-indigo-950 border border-indigo-900 text-indigo-300 px-2 py-0.5 rounded">
+                          {member.role}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {currentPage === 'admin-sessions' && (
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+              <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
+                <Shield className="h-5 w-5 text-purple-400" />
+                Active Sessions Manager (SuperAdmin Live state from Redis)
+              </h3>
+              <div className="flex flex-col gap-3">
+                {activeSessions.map((session) => (
+                  <div key={session.jti} className="bg-slate-950 p-4 rounded-xl flex items-center justify-between border border-slate-800">
+                    <div>
+                      <p className="font-mono text-xs text-purple-300">JTI: {session.jti}</p>
+                      <p className="text-xs text-slate-500">User ID: {session.user_id}</p>
+                    </div>
+                    <button 
+                      onClick={() => handleRevokeSession(session.jti)}
+                      className="bg-red-950/40 hover:bg-red-900/60 border border-red-900 text-red-300 text-xs px-3 py-1.5 rounded-lg transition"
+                    >
+                      Revoke Session
+                    </button>
+                  </div>
+                ))}
+                {activeSessions.length === 0 && (
+                  <p className="text-slate-500 italic text-sm">No active JWT sessions found in Redis.</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {currentPage === 'admin-audit' && (
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+              <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
+                <Clock className="h-5 w-5 text-purple-400" />
+                Audit Trail Timeline
+              </h3>
+              <div className="flex items-center gap-2 mb-4">
+                <Search className="h-4 w-4 text-slate-500" />
+                <input 
+                  type="text" 
+                  value={auditSearch} 
+                  onChange={(e) => setAuditSearch(e.target.value)}
+                  placeholder="Filter events by routing key..."
+                  className="bg-slate-950 border border-slate-800 text-sm rounded-lg px-3 py-1.5 outline-none w-64"
+                />
+              </div>
+              <div className="flex flex-col gap-2 max-h-[500px] overflow-y-auto">
+                {auditLogs
+                  .filter(log => log.routing_key.includes(auditSearch))
+                  .map((log) => (
+                    <div key={log.id} className="bg-slate-950 p-4 rounded-xl border border-slate-800 text-xs font-mono flex flex-col gap-2">
+                      <div className="flex items-center justify-between border-b border-slate-900 pb-2">
+                        <span className="text-purple-400 font-bold">{log.routing_key}</span>
+                        <span className="text-slate-500">{log.created_at}</span>
+                      </div>
+                      <div className="text-slate-400 text-[10px] overflow-x-auto whitespace-pre-wrap">
+                        {JSON.stringify(log.payload, null, 2)}
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          )}
+
+          {currentPage === 'create-team' && (
+            <div className="max-w-md mx-auto bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-2xl">
+              <h2 className="text-2xl font-bold mb-6 text-center">Create Team Workspace</h2>
+              <form 
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  const name = e.target.team_name.value;
+                  if (!name) return;
+                  try {
+                    const res = await fetch(`${API_BASE}/accounts/create-team`, {
+                      method: 'POST',
+                      headers: getHeaders(),
+                      body: JSON.stringify({ name })
+                    });
+                    if (res.ok) {
+                      setInfo('Team workspace created successfully!');
+                      await fetchUserAccounts();
+                      setCurrentPage('dashboard');
+                    }
+                  } catch (err) {
+                    setError('Failed to create team.');
+                  }
+                }}
+                className="flex flex-col gap-4"
+              >
+                <div>
+                  <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">Team Name</label>
+                  <input 
+                    name="team_name"
+                    type="text" 
+                    required 
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 focus:border-indigo-500 outline-none"
+                    placeholder="My Startup Workspace"
+                  />
+                </div>
+                <button 
+                  type="submit" 
+                  className="mt-2 bg-indigo-600 hover:bg-indigo-500 font-semibold rounded-lg py-2.5 transition"
+                >
+                  Create Workspace
+                </button>
+              </form>
+            </div>
+          )}
+        </main>
+      </div>
+    </div>
+  );
+}
