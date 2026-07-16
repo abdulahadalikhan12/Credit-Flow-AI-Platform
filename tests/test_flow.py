@@ -7,14 +7,14 @@ from fastapi.testclient import TestClient
 
 def clear_modules():
     for name in list(sys.modules.keys()):
-        if any(name.startswith(p) for p in ["routes", "models", "core", "db", "schemas", "shared"]):
+        if any(name.startswith(p) for p in ["routes", "models", "core", "db", "schemas", "shared", "main"]):
             del sys.modules[name]
 
 def test_auth_signup_validation():
     clear_modules()
     sys.path.insert(0, os.path.abspath("auth_service"))
     
-    from auth_service.main import app
+    from main import app
     client = TestClient(app)
     
     # Missing email/password validation
@@ -27,7 +27,7 @@ def test_ai_generate_request_validation():
     clear_modules()
     sys.path.insert(0, os.path.abspath("ai_service"))
     
-    from ai_service.main import app
+    from main import app
     client = TestClient(app)
     
     # Payload model schema validation
@@ -40,7 +40,7 @@ def test_auth_login_validation():
     clear_modules()
     sys.path.insert(0, os.path.abspath("auth_service"))
     
-    from auth_service.main import app
+    from main import app
     client = TestClient(app)
     
     response = client.post("/api/v1/auth/login", json={"email": "not-an-email", "password": "123"})
