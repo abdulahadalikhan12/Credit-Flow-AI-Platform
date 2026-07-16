@@ -52,39 +52,76 @@ async def create_checkout_session(
         raise HTTPException(status_code=404, detail="Workspace subscription not initialized")
 
     plan_tier = payload.plan_tier.lower()
-    if plan_tier not in ["pro", "team"]:
+    is_pack = plan_tier.startswith("credits_")
+    
+    if not is_pack and plan_tier not in ["pro", "team"]:
         raise HTTPException(status_code=400, detail="Invalid plan tier specified")
 
-    amount = 1900 if plan_tier == "pro" else 4900 # $19.00 or $49.00
+    if is_pack:
+        if plan_tier == "credits_100":
+            amount = 500
+        elif plan_tier == "credits_500":
+            amount = 2000
+        elif plan_tier == "credits_1000":
+            amount = 3500
+        else:
+            raise HTTPException(status_code=400, detail="Invalid credit pack specified")
+    else:
+        amount = 1900 if plan_tier == "pro" else 4900 # $19.00 or $49.00
 
     try:
         # Create Stripe Checkout Session
-        session = stripe.checkout.Session.create(
-            customer=sub.stripe_customer_id,
-            payment_method_types=['card'],
-            line_items=[{
-                'price_data': {
-                    'currency': 'usd',
-                    'product_data': {
-                        'name': f'CreditFlow {plan_tier.title()} Subscription',
-                        'description': f'Access to {plan_tier.title()} tier features and monthly credits.',
+        if is_pack:
+            session = stripe.checkout.Session.create(
+                customer=sub.stripe_customer_id,
+                payment_method_types=['card'],
+                line_items=[{
+                    'price_data': {
+                        'currency': 'usd',
+                        'product_data': {
+                            'name': f'CreditFlow {plan_tier.replace("credits_", "")} Credits Pack',
+                            'description': f'One-time purchase of additional {plan_tier.replace("credits_", "")} credits.',
+                        },
+                        'unit_amount': amount,
                     },
-                    'unit_amount': amount,
-                    'recurring': {
-                        'interval': 'month',
+                    'quantity': 1,
+                }],
+                mode='payment',
+                success_url='http://localhost:3000/dashboard?billing=success',
+                cancel_url='http://localhost:3000/dashboard?billing=cancel',
+                client_reference_id=str(account_id),
+                metadata={
+                    "plan_tier": plan_tier,
+                    "account_id": str(account_id)
+                }
+            )
+        else:
+            session = stripe.checkout.Session.create(
+                customer=sub.stripe_customer_id,
+                payment_method_types=['card'],
+                line_items=[{
+                    'price_data': {
+                        'currency': 'usd',
+                        'product_data': {
+                            'name': f'CreditFlow {plan_tier.title()} Subscription',
+                            'description': f'Access to {plan_tier.title()} tier features and monthly credits.',
+                        },
+                        'unit_amount': amount,
+                        'recurring': {
+                            'interval': 'month',
+                        },
                     },
-                },
-                'quantity': 1,
-            }],
-            mode='subscription',
-            success_url='http://localhost:3000/dashboard?billing=success',
-            cancel_url='http://localhost:3000/dashboard?billing=cancel',
-            client_reference_id=str(account_id),
-            metadata={
-                "plan_tier": plan_tier,
-                "account_id": str(account_id)
-            }
-        )
+                    'quantity': 1,
+                }],
+                mode='subscription',
+                success_url='http://localhost:3000/dashboard?billing=success',
+                cancel_url='http://localhost:3000/dashboard?billing=cancel',
+                client_reference_id=str(account_id),
+                metadata={
+                    "plan_tier": plan_tier,
+                    "account_id": str(account_id)
+                }
+            )
         return {"checkout_url": session.url}
     except Exception as e:
         # Fallback to local sandbox mock URL in case API keys are invalid or Stripe is down
@@ -142,16 +179,17 @@ async def handle_stripe_webhook_direct(
                 else:
                     raise HTTPException(status_code=400, detail="Cannot resolve account")
             
-            # Update subscription
-            q = select(Subscription).where(Subscription.account_id == account_id).with_for_update()
-            res = await db.execute(q)
-            sub = res.scalar_one_or_none()
-            if sub:
-                sub.plan_tier = plan_tier
-                sub.status = "active"
-                sub.stripe_subscription_id = subscription_id
-                from datetime import datetime, timedelta
-                sub.current_period_end = datetime.utcnow() + timedelta(days=30)
+            # Update subscription (only if not a credit pack purchase)
+            if not plan_tier.startswith("credits_"):
+                q = select(Subscription).where(Subscription.account_id == account_id).with_for_update()
+                res = await db.execute(q)
+                sub = res.scalar_one_or_none()
+                if sub:
+                    sub.plan_tier = plan_tier
+                    sub.status = "active"
+                    sub.stripe_subscription_id = subscription_id
+                    from datetime import datetime, timedelta
+                    sub.current_period_end = datetime.utcnow() + timedelta(days=30)
             
             # Save invoice
             invoice = Invoice(

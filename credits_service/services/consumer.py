@@ -29,18 +29,26 @@ async def handle_invoice_paid(session, body):
     account_id = uuid.UUID(account_id_str)
     
     # Determine credit amount based on tier
-    # Free = 100, Pro = 1000, Team = 5000
+    # Free = 100, Pro = 1000, Team = 5000, credit packs = custom value
     credit_amount = 100
+    description = f"Monthly subscription grant for {plan_tier} tier"
+    
     if plan_tier == "pro":
         credit_amount = 1000
     elif plan_tier == "team":
         credit_amount = 5000
+    elif plan_tier.startswith("credits_"):
+        try:
+            credit_amount = int(plan_tier.split("_")[1])
+            description = f"Credit pack purchase: {credit_amount} credits"
+        except ValueError:
+            credit_amount = 0
 
     entry = CreditLedgerEntry(
         account_id=account_id,
         amount=credit_amount,
         transaction_type="grant",
-        description=f"Monthly subscription grant for {plan_tier} tier"
+        description=description
     )
     session.add(entry)
     logger.info(f"Granted {credit_amount} credits to account {account_id} ({plan_tier})")

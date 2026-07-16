@@ -26,8 +26,6 @@ class RabbitMQClient:
         logger.info("Connecting to RabbitMQ...")
         self.connection = await aio_pika.connect_robust(self.amqp_url)
         self.channel = await self.connection.channel()
-        # Enable publisher confirms
-        await self.channel.confirm_delivery()
         logger.info("Connected to RabbitMQ with publisher confirms enabled")
 
     async def declare_exchange(self, name: str, type: str = "topic") -> aio_pika.Exchange:
