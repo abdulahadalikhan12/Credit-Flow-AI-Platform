@@ -1339,33 +1339,6 @@ export default function App() {
                   Content Studio
                 </h3>
 
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">AI Text Model</label>
-                    <select 
-                      value={aiModel} 
-                      onChange={(e) => setAiModel(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 focus:border-indigo-500 outline-none"
-                    >
-                      <option value="gemini">Gemini 2.5 Flash (1 Cr)</option>
-                      <option value="llama">Llama 3 8B (1 Cr)</option>
-                      <option value="mistral">Mistral 7B (1 Cr)</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">AI Image Model</label>
-                    <select 
-                      value={aiImageModel} 
-                      onChange={(e) => setAiImageModel(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 focus:border-indigo-500 outline-none"
-                    >
-                      <option value="flux">Flux (High Quality)</option>
-                      <option value="turbo">Turbo (Fast)</option>
-                      <option value="anime">Anime (Artistic)</option>
-                    </select>
-                  </div>
-                </div>
-
                 <div>
                   <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">Title</label>
                   <input 

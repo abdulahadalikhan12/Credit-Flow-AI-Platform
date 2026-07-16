@@ -129,30 +129,20 @@ async def generate_text_stream_task(job_id: str, account_id: str, prompt: str, m
         await generate_mock_text_stream(job_id, account_id, prompt, model_type, r)
         return
         
-    model_mapping = {
-        "gemini": "google/gemma-4-31b-it:free",
-        "llama": "meta-llama/llama-3.3-70b-instruct:free",
-        "mistral": "cognitivecomputations/dolphin-mistral-24b-venice-edition:free"
-    }
-    model_name = model_mapping.get(model_type, "openrouter/free")
-    
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "HTTP-Referer": "http://localhost:3000",
         "X-Title": "CreditFlow AI Platform"
     }
-    
-    payload = {
-        "model": model_name,
-        "messages": [{"role": "user", "content": prompt}],
-        "stream": True
-    }
-    
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    
-    full_response = []
-    tokens_count = 0
+
+    models_to_try = [
+        "google/gemma-2-9b-it:free",
+        "meta-llama/llama-3-8b-instruct:free",
+        "mistralai/mistral-7b-instruct:free",
+        "qwen/qwen-2.5-coder-32b-instruct:free",
+        "openrouter/free"
+    ]
     
     # Mark job as running
     async with SessionLocal() as db_session:
@@ -160,34 +150,59 @@ async def generate_text_stream_task(job_id: str, account_id: str, prompt: str, m
             job = GenerationJob(job_id=job_id, status="running")
             db_session.add(job)
 
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    
+    success = False
+    final_model_used = None
+    full_response = []
+    tokens_count = 0
+    
     try:
-        async with httpx.AsyncClient() as client:
-            async with client.stream("POST", url, headers=headers, json=payload, timeout=60.0) as response:
-                if response.status_code != 200:
-                    err_text = await response.aread()
-                    logger.error(f"OpenRouter status code: {response.status_code}. Detail: {err_text.decode()}")
-                    # Fallback to mock if API key fails
-                    await generate_mock_text_stream(job_id, account_id, prompt, model_type, r)
-                    return
-                    
-                async for chunk in response.aiter_lines():
-                    if not chunk.strip():
-                        continue
-                    if chunk.startswith("data: "):
-                        data_str = chunk[6:].strip()
-                        if data_str == "[DONE]":
-                            break
-                        try:
-                            data_json = json.loads(data_str)
-                            token = data_json["choices"][0]["delta"].get("content", "")
-                            if token:
-                                full_response.append(token)
-                                tokens_count += 1
-                                # Publish token chunk to Redis channel
-                                r.publish(f"job:{job_id}", token)
-                        except Exception:
-                            pass
+        for model_name in models_to_try:
+            logger.info(f"Attempting content generation using OpenRouter model: {model_name}")
+            payload = {
+                "model": model_name,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": True
+            }
+            
+            try:
+                async with httpx.AsyncClient() as client:
+                    async with client.stream("POST", url, headers=headers, json=payload, timeout=60.0) as response:
+                        if response.status_code != 200:
+                            err_text = await response.aread()
+                            logger.warning(f"Model {model_name} failed with status {response.status_code}: {err_text.decode()}")
+                            continue
                             
+                        async for chunk in response.aiter_lines():
+                            if not chunk.strip():
+                                continue
+                            if chunk.startswith("data: "):
+                                data_str = chunk[6:].strip()
+                                if data_str == "[DONE]":
+                                    break
+                                try:
+                                    data_json = json.loads(data_str)
+                                    token = data_json["choices"][0]["delta"].get("content", "")
+                                    if token:
+                                        full_response.append(token)
+                                        tokens_count += 1
+                                        r.publish(f"job:{job_id}", token)
+                                except Exception:
+                                    pass
+                        
+                        success = True
+                        final_model_used = model_name
+                        break
+            except Exception as e:
+                logger.warning(f"Exception while trying model {model_name}: {e}")
+                continue
+
+        if not success:
+            logger.info("All OpenRouter models failed or rate-limited. Falling back to mock text generator.")
+            await generate_mock_text_stream(job_id, account_id, prompt, model_type, r)
+            return
+                                
         # Complete DB updates
         final_text = "".join(full_response)
         credits_cost = 1
@@ -200,7 +215,7 @@ async def generate_text_stream_task(job_id: str, account_id: str, prompt: str, m
                     response=final_text,
                     tokens_used=tokens_count,
                     cost=credits_cost,
-                    model=model_name
+                    model=final_model_used or "openrouter/free"
                 )
                 db_session.add(history_entry)
                 
@@ -210,7 +225,7 @@ async def generate_text_stream_task(job_id: str, account_id: str, prompt: str, m
                 job = res.scalar_one_or_none()
                 if job:
                     job.status = "completed"
-            
+                
         # Emit ai.generation_completed
         rabbitmq = RabbitMQClient()
         await rabbitmq.publish(
@@ -220,7 +235,7 @@ async def generate_text_stream_task(job_id: str, account_id: str, prompt: str, m
                 "account_id": account_id,
                 "tokens_used": tokens_count,
                 "credits_cost": credits_cost,
-                "model": model_name,
+                "model": final_model_used or "openrouter/free",
                 "job_id": job_id,
                 "prompt": prompt,
                 "response": final_text
