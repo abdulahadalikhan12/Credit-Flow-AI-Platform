@@ -130,11 +130,11 @@ async def generate_text_stream_task(job_id: str, account_id: str, prompt: str, m
         return
         
     model_mapping = {
-        "gemini": "google/gemini-2.5-flash:free",
-        "llama": "meta-llama/llama-3-8b-instruct:free",
-        "mistral": "mistralai/mistral-7b-instruct:free"
+        "gemini": "google/gemma-4-31b-it:free",
+        "llama": "meta-llama/llama-3.3-70b-instruct:free",
+        "mistral": "cognitivecomputations/dolphin-mistral-24b-venice-edition:free"
     }
-    model_name = model_mapping.get(model_type, "google/gemini-2.5-flash:free")
+    model_name = model_mapping.get(model_type, "openrouter/free")
     
     headers = {
         "Authorization": f"Bearer {api_key}",
