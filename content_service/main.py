@@ -53,6 +53,9 @@ app = FastAPI(title="Content Service", lifespan=lifespan)
 # Register routes
 app.include_router(content_router, prefix="/api/v1")
 
+# Ensure static uploads directory exists before mounting StaticFiles
+os.makedirs("/app/content_service/static/uploads", exist_ok=True)
+
 # Mount static directory for manual image uploads
 app.mount("/api/v1/content/static", StaticFiles(directory="/app/content_service/static"), name="static")
 
