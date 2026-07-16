@@ -102,6 +102,14 @@ async def gateway_middleware(request: Request, call_next):
     if request.method == "OPTIONS":
         return await call_next(request)
 
+    # Helper to append CORS headers to responses returned directly from middleware
+    def with_cors(response: Response) -> Response:
+        response.headers["Access-Control-Allow-Origin"] = "http://localhost:3000"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        return response
+
     path = request.url.path
     
     # 1. Skip middleware for webhooks (handled in endpoints directly)
@@ -112,7 +120,7 @@ async def gateway_middleware(request: Request, call_next):
     client_ip = request.client.host if request.client else "unknown"
     ip_limit_key = f"rate:ip:{client_ip}"
     if await is_rate_limited(ip_limit_key, limit=100, window=60):
-        return JSONResponse(status_code=429, content={"detail": "Too many requests. IP Rate limit exceeded."})
+        return with_cors(JSONResponse(status_code=429, content={"detail": "Too many requests. IP Rate limit exceeded."}))
 
     # 3. Authentication & RBAC Enrichment
     is_public = any(path == p or path.startswith(p) for p in PUBLIC_PATHS)
@@ -124,7 +132,7 @@ async def gateway_middleware(request: Request, call_next):
     if not is_public:
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
-            return JSONResponse(status_code=401, content={"detail": "Authorization header missing or invalid"})
+            return with_cors(JSONResponse(status_code=401, content={"detail": "Authorization header missing or invalid"}))
         
         token = auth_header.split(" ")[1]
         try:
@@ -134,7 +142,7 @@ async def gateway_middleware(request: Request, call_next):
             
             # Check session revocation state in Redis
             if not redis_client.exists(f"auth:jti:{jti}"):
-                return JSONResponse(status_code=401, content={"detail": "Session has been revoked or expired"})
+                return with_cors(JSONResponse(status_code=401, content={"detail": "Session has been revoked or expired"}))
 
             user_id = payload.get("user_id")
             account_id = payload.get("account_id")
@@ -146,10 +154,10 @@ async def gateway_middleware(request: Request, call_next):
                 # Limit based on role/tier (e.g. Free: 30 req/min, Paid: 200 req/min)
                 limit = 200 if role in ["owner", "admin"] else 50
                 if await is_rate_limited(account_limit_key, limit=limit, window=60):
-                    return JSONResponse(status_code=429, content={"detail": "Workspace rate limit exceeded."})
+                    return with_cors(JSONResponse(status_code=429, content={"detail": "Workspace rate limit exceeded."}))
 
         except Exception as e:
-            return JSONResponse(status_code=401, content={"detail": f"Invalid token: {str(e)}"})
+            return with_cors(JSONResponse(status_code=401, content={"detail": f"Invalid token: {str(e)}"}))
 
     # 5. Attach context headers for downstream microservices
     # Modifying state directly on request scope
