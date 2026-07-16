@@ -24,7 +24,7 @@ app = FastAPI(title="CreditFlow API Gateway")
 # Enable CORS for frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -64,9 +64,12 @@ PUBLIC_PATHS = [
     "/api/v1/auth/signup",
     "/api/v1/auth/login",
     "/api/v1/auth/refresh",
+    "/api/v1/auth/switch",
     "/api/v1/auth/verify-email",
     "/api/v1/auth/forgot-password",
     "/api/v1/auth/reset-password",
+    "/api/v1/billing/webhook/stripe",
+    "/api/v1/ai/stream/",
     "/health"
 ]
 
@@ -95,6 +98,10 @@ async def is_rate_limited(client_key: str, limit: int, window: int) -> bool:
 
 @app.middleware("http")
 async def gateway_middleware(request: Request, call_next):
+    # Pass OPTIONS preflight requests directly to CORSMiddleware
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
     path = request.url.path
     
     # 1. Skip middleware for webhooks (handled in endpoints directly)
@@ -152,53 +159,6 @@ async def gateway_middleware(request: Request, call_next):
 
     return await call_next(request)
 
-# Catch-all Reverse Proxy Route
-@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-async def reverse_proxy(path: str, request: Request):
-    # Determine downstream service
-    parts = path.split("/")
-    if len(parts) < 3: # expected format: api/v1/{service}/...
-        raise HTTPException(status_code=404, detail="Resource not found")
-    
-    service_key = parts[2] # e.g. auth, accounts, billing...
-    
-    if service_key not in SERVICE_URLS:
-         raise HTTPException(status_code=404, detail=f"Service '{service_key}' not found")
-         
-    target_url = f"{SERVICE_URLS[service_key]}/{path}"
-    
-    # Inject context headers
-    headers = dict(request.headers)
-    if hasattr(request.state, "user_id") and request.state.user_id:
-        headers["X-User-Id"] = str(request.state.user_id)
-    if hasattr(request.state, "account_id") and request.state.account_id:
-        headers["X-Account-Id"] = str(request.state.account_id)
-    if hasattr(request.state, "role") and request.state.role:
-        headers["X-User-Role"] = str(request.state.role)
-
-    # Clean Host header to prevent downstream hostname mismatch errors
-    headers.pop("host", None)
-
-    # Forward the request
-    async with httpx.AsyncClient() as client:
-        try:
-            req_body = await request.body()
-            response = await client.request(
-                method=request.method,
-                url=target_url,
-                headers=headers,
-                params=dict(request.query_params),
-                content=req_body,
-                timeout=30.0
-            )
-            return Response(
-                content=response.content,
-                status_code=response.status_code,
-                headers=dict(response.headers)
-            )
-        except httpx.RequestError as e:
-            logger.error(f"Failed to forward request to {target_url}: {e}")
-            raise HTTPException(status_code=502, detail="Bad Gateway: Downstream service is unreachable")
 
 # SSE Re-stream endpoint
 @app.get("/api/v1/ai/stream/{job_id}")
@@ -334,3 +294,51 @@ async def openrouter_webhook(request: Request):
 @app.get("/health")
 def health_check():
     return {"status": "ok", "service": "api_gateway"}
+
+# Catch-all Reverse Proxy Route
+@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def reverse_proxy(path: str, request: Request):
+    # Determine downstream service
+    parts = path.split("/")
+    if len(parts) < 3: # expected format: api/v1/{service}/...
+        raise HTTPException(status_code=404, detail="Resource not found")
+    
+    service_key = parts[2] # e.g. auth, accounts, billing...
+    
+    if service_key not in SERVICE_URLS:
+         raise HTTPException(status_code=404, detail=f"Service '{service_key}' not found")
+         
+    target_url = f"{SERVICE_URLS[service_key]}/{path}"
+    
+    # Inject context headers
+    headers = dict(request.headers)
+    if hasattr(request.state, "user_id") and request.state.user_id:
+        headers["X-User-Id"] = str(request.state.user_id)
+    if hasattr(request.state, "account_id") and request.state.account_id:
+        headers["X-Account-Id"] = str(request.state.account_id)
+    if hasattr(request.state, "role") and request.state.role:
+        headers["X-User-Role"] = str(request.state.role)
+
+    # Clean Host header to prevent downstream hostname mismatch errors
+    headers.pop("host", None)
+
+    # Forward the request
+    async with httpx.AsyncClient() as client:
+        try:
+            req_body = await request.body()
+            response = await client.request(
+                method=request.method,
+                url=target_url,
+                headers=headers,
+                params=dict(request.query_params),
+                content=req_body,
+                timeout=30.0
+            )
+            return Response(
+                content=response.content,
+                status_code=response.status_code,
+                headers=dict(response.headers)
+            )
+        except httpx.RequestError as e:
+            logger.error(f"Failed to forward request to {target_url}: {e}")
+            raise HTTPException(status_code=502, detail="Bad Gateway: Downstream service is unreachable")
