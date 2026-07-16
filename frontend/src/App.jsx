@@ -59,33 +59,141 @@ export default function App() {
   const [auditLogs, setAuditLogs] = useState([]);
   const [auditSearch, setAuditSearch] = useState('');
 
-  // Handle auto email verification via URL query parameter click
+  // Sandbox Simulator, Dynamic Calendar & Connections states
+  const [mockCheckout, setMockCheckout] = useState(null); // { account_id, plan_tier } or null
+  const [successModal, setSuccessModal] = useState('');
+  const [currentMonth, setCurrentMonth] = useState(new Date());
+  const [selectedCalendarEvent, setSelectedCalendarEvent] = useState(null);
+  const [rescheduleDate, setRescheduleDate] = useState('');
+  const [connections, setConnections] = useState([]);
+  const [socialHistory, setSocialHistory] = useState([]);
+  const [adminWorkspaces, setAdminWorkspaces] = useState([]);
+  const [selectedWorkspaceDetails, setSelectedWorkspaceDetails] = useState(null);
+  const [confirmAction, setConfirmAction] = useState(null);
+
+  // Mock Card Form State for Stripe Sandbox
+  const [mockCardName, setMockCardName] = useState('');
+  const [mockCardNumber, setMockCardNumber] = useState('');
+  const [mockCardExpiry, setMockCardExpiry] = useState('');
+  const [mockCardCvc, setMockCardCvc] = useState('');
+
+  // Handle auto email verification, invite link and Stripe Sandbox simulation parameters
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+    const isInvite = window.location.pathname.includes('/invite');
+    
     const tokenParam = params.get('token');
     if (tokenParam) {
+      window.history.replaceState({}, document.title, '/');
+      if (isInvite) {
+        // Handle member invitation!
+        localStorage.setItem('pending_invite_token', tokenParam);
+        setInfo('Invitation token captured. Please log in or register to join the workspace.');
+        setCurrentPage('login');
+      } else {
+        // Handle email verification
+        const verifyToken = async () => {
+          setError('');
+          setInfo('Verifying email...');
+          try {
+            const res = await fetch(`${API_BASE}/auth/verify-email`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ token: tokenParam })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || 'Verification failed');
+            setInfo('Email verified successfully! You can now log in.');
+            setCurrentPage('login');
+          } catch (err) {
+            setError(err.message);
+            setInfo('');
+          }
+        };
+        verifyToken();
+      }
+    }
+    
+    const mockParam = params.get('mock_checkout');
+    const accIdParam = params.get('account_id');
+    const tierParam = params.get('plan_tier');
+    if (mockParam === 'true' && accIdParam && tierParam) {
       window.history.replaceState({}, document.title, window.location.pathname);
-      const verifyToken = async () => {
-        setError('');
-        setInfo('Verifying email...');
-        try {
-          const res = await fetch(`${API_BASE}/auth/verify-email`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ token: tokenParam })
-          });
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.detail || 'Verification failed');
-          setInfo('Email verified successfully! You can now log in.');
-          setCurrentPage('login');
-        } catch (err) {
-          setError(err.message);
-          setInfo('');
-        }
-      };
-      verifyToken();
+      setMockCheckout({
+        account_id: accIdParam,
+        plan_tier: tierParam
+      });
+    }
+    
+    const billingParam = params.get('billing');
+    if (billingParam === 'success') {
+      window.history.replaceState({}, document.title, window.location.pathname);
+      setSuccessModal("Payment Completed Successfully! Your credits will be updated shortly.");
+      fetchCreditsBalance();
+      fetchInvoices();
+    } else if (billingParam === 'cancel') {
+      window.history.replaceState({}, document.title, window.location.pathname);
+      setError("Stripe Checkout was cancelled.");
     }
   }, []);
+
+  // Enforce client-side role guards & routing synchronization
+  useEffect(() => {
+    const guestPages = ['home', 'login', 'signup', 'forgot-password', 'reset-password'];
+    if (token) {
+      if (guestPages.includes(currentPage)) {
+        setCurrentPage('dashboard');
+      }
+      if (['admin-sessions', 'admin-audit', 'admin-workspaces'].includes(currentPage)) {
+        if (user && user.role !== 'superadmin') {
+          setCurrentPage('dashboard');
+          setError('Access denied: SuperAdmin privileges required.');
+        }
+      }
+      if (currentPage === 'billing') {
+        if (currentAccount && currentAccount.role !== 'owner') {
+          setCurrentPage('dashboard');
+          setError('Access denied: Only the workspace Owner can access Billing.');
+        }
+      }
+    } else {
+      if (!guestPages.includes(currentPage)) {
+        setCurrentPage('home');
+      }
+    }
+  }, [currentPage, user, currentAccount, token]);
+
+  // Handle accepting invitations automatically if logged in
+  const handleAcceptInvite = async (inviteToken) => {
+    setError('');
+    setInfo('Accepting workspace invitation...');
+    try {
+      const res = await fetch(`${API_BASE}/accounts/invite/accept`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({ token: inviteToken })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Failed to accept invitation');
+      
+      localStorage.removeItem('pending_invite_token');
+      setInfo('Workspace invitation accepted successfully!');
+      await fetchUserAccounts();
+      setCurrentPage('dashboard');
+    } catch (err) {
+      setError(err.message);
+      localStorage.removeItem('pending_invite_token');
+    }
+  };
+
+  useEffect(() => {
+    if (token && user) {
+      const pendingInvite = localStorage.getItem('pending_invite_token');
+      if (pendingInvite) {
+        handleAcceptInvite(pendingInvite);
+      }
+    }
+  }, [token, user]);
 
   // Extract User Profile from JWT (Base64 decode payload)
   useEffect(() => {
@@ -120,7 +228,7 @@ export default function App() {
     if (currentAccount && token) {
       fetchDashboardData();
     }
-  }, [currentAccount]);
+  }, [currentAccount, token]);
 
   // Request Headers Helper
   const getHeaders = () => {
@@ -282,6 +390,199 @@ export default function App() {
       fetchAdminSessions();
       fetchAuditLogs();
     }
+  };
+
+  const fetchCalendarPosts = async () => {
+    if (!currentAccount) return;
+    try {
+      const year = currentMonth.getFullYear();
+      const month = currentMonth.getMonth();
+      const startDateStr = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+      const lastDay = new Date(year, month + 1, 0).getDate();
+      const endDateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+      
+      const res = await fetch(`${API_BASE}/scheduler/calendar?start_date=${startDateStr}&end_date=${endDateStr}`, { headers: getHeaders() });
+      if (res.ok) {
+        setCalendarPosts(await res.json());
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const fetchSocialData = async () => {
+    if (!currentAccount) return;
+    try {
+      const connRes = await fetch(`${API_BASE}/social/connections`, { headers: getHeaders() });
+      if (connRes.ok) setConnections(await connRes.json());
+      
+      const histRes = await fetch(`${API_BASE}/social/history`, { headers: getHeaders() });
+      if (histRes.ok) setSocialHistory(await histRes.json());
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const fetchAdminWorkspaces = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/admin/workspaces`, { headers: getHeaders() });
+      if (res.ok) {
+        setAdminWorkspaces(await res.json());
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  useEffect(() => {
+    if (currentPage === 'calendar' && currentAccount) {
+      fetchCalendarPosts();
+    }
+  }, [currentMonth, currentAccount, currentPage]);
+
+  useEffect(() => {
+    if (currentPage === 'social-integrations' && currentAccount) {
+      fetchSocialData();
+    }
+  }, [currentPage, currentAccount]);
+
+  useEffect(() => {
+    if (currentPage === 'admin-workspaces' && user?.role === 'superadmin') {
+      fetchAdminWorkspaces();
+    }
+    if (currentPage === 'admin-sessions' && user?.role === 'superadmin') {
+      fetchAdminSessions();
+    }
+    if (currentPage === 'admin-audit' && user?.role === 'superadmin') {
+      fetchAuditLogs();
+    }
+  }, [currentPage, user]);
+
+  const triggerConfirmation = (message, onConfirm) => {
+    setConfirmAction({
+      message,
+      onConfirm: () => {
+        onConfirm();
+        setConfirmAction(null);
+      }
+    });
+  };
+
+  const handleAuthorizeSimulatedPayment = async () => {
+    if (!mockCheckout) return;
+    setError('');
+    setInfo('');
+    try {
+      const payload = {
+        event_type: "invoice.paid",
+        body: {
+          account_id: mockCheckout.account_id,
+          customer_id: `cus_mock_${mockCheckout.account_id.slice(0, 8)}`,
+          subscription_id: `sub_mock_${Math.random().toString(36).substring(2, 10)}`,
+          plan_tier: mockCheckout.plan_tier,
+          amount_paid: mockCheckout.plan_tier.startsWith("credits_") 
+            ? (mockCheckout.plan_tier === "credits_100" ? 500 : mockCheckout.plan_tier === "credits_500" ? 2000 : 3500)
+            : (mockCheckout.plan_tier === "pro" ? 1900 : 4900)
+        }
+      };
+      
+      const res = await fetch(`${API_BASE}/billing/webhook/stripe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) throw new Error("Simulator webhook call failed.");
+      
+      setMockCheckout(null);
+      setSuccessModal("Simulated Payment webhook sent successfully! Credits should update in a few seconds.");
+      fetchCreditsBalance();
+      setTimeout(fetchCreditsBalance, 2000);
+      fetchInvoices();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleSocialDisconnect = async () => {
+    triggerConfirmation("Are you sure you want to disconnect your LinkedIn profile?", async () => {
+      setError('');
+      try {
+        const res = await fetch(`${API_BASE}/social/disconnect`, {
+          method: 'POST',
+          headers: getHeaders()
+        });
+        if (res.ok) {
+          setInfo("Successfully disconnected LinkedIn connection.");
+          fetchSocialData();
+        }
+      } catch (e) {
+        setError("Failed to disconnect LinkedIn connection.");
+      }
+    });
+  };
+
+  const handleCancelSchedule = async (scheduleId) => {
+    triggerConfirmation("Are you sure you want to cancel this scheduled post?", async () => {
+      setError('');
+      try {
+        const res = await fetch(`${API_BASE}/scheduler/cancel/${scheduleId}`, {
+          method: 'POST',
+          headers: getHeaders()
+        });
+        if (!res.ok) {
+          const data = await res.json();
+          throw new Error(data.detail || 'Failed to cancel schedule');
+        }
+        setInfo('Schedule canceled successfully.');
+        setSelectedCalendarEvent(null);
+        fetchCalendarPosts();
+      } catch (err) {
+        setError(err.message);
+      }
+    });
+  };
+
+  const handleReschedulePost = async (e) => {
+    e.preventDefault();
+    if (!selectedCalendarEvent || !rescheduleDate) return;
+    setError('');
+    try {
+      const res = await fetch(`${API_BASE}/scheduler/reschedule/${selectedCalendarEvent.id}?publish_at=${encodeURIComponent(new Date(rescheduleDate).toISOString())}`, {
+        method: 'POST',
+        headers: getHeaders()
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.detail || 'Failed to reschedule post');
+      }
+      setInfo('Post rescheduled successfully!');
+      setSelectedCalendarEvent(null);
+      setRescheduleDate('');
+      fetchCalendarPosts();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleRemoveMember = async (memberId) => {
+    triggerConfirmation("Are you sure you want to remove this member from the workspace?", async () => {
+      setError('');
+      try {
+        const res = await fetch(`${API_BASE}/accounts/members/${memberId}`, {
+          method: 'DELETE',
+          headers: getHeaders()
+        });
+        if (res.ok) {
+          setInfo("Member removed successfully.");
+          fetchTeamMembers();
+        } else {
+          const data = await res.json();
+          throw new Error(data.detail || "Failed to remove member");
+        }
+      } catch (err) {
+        setError(err.message);
+      }
+    });
   };
 
   const fetchPosts = async () => {
@@ -557,16 +858,18 @@ export default function App() {
 
   // Admin Sessions Revoke
   const handleRevokeSession = async (jti) => {
-    try {
-      const res = await fetch(`${API_BASE}/admin/sessions/${jti}`, {
-        method: 'DELETE',
-        headers: getHeaders()
-      });
-      if (res.ok) {
-        setInfo('Session revoked successfully.');
-        fetchAdminSessions();
-      }
-    } catch (e) { console.error(e); }
+    triggerConfirmation("Are you sure you want to revoke this user's active session?", async () => {
+      try {
+        const res = await fetch(`${API_BASE}/admin/sessions/${jti}`, {
+          method: 'DELETE',
+          headers: getHeaders()
+        });
+        if (res.ok) {
+          setInfo('Session revoked successfully.');
+          fetchAdminSessions();
+        }
+      } catch (e) { console.error(e); }
+    });
   };
 
   return (
@@ -700,6 +1003,15 @@ export default function App() {
               <Users className="h-5 w-5" />
               Team Management
             </button>
+            <button
+              onClick={() => setCurrentPage('social-integrations')}
+              className={`flex items-center gap-3 px-4 py-3 rounded-xl transition ${
+                currentPage === 'social-integrations' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'hover:bg-slate-800 text-slate-400'
+              }`}
+            >
+              <RefreshCw className="h-5 w-5" />
+              LinkedIn Connection
+            </button>
 
             {/* Admin console links */}
             {user.role === 'superadmin' && (
@@ -707,6 +1019,15 @@ export default function App() {
                 <span className="px-4 text-xs font-bold text-slate-500 uppercase tracking-widest">
                   Admin Console
                 </span>
+                <button
+                  onClick={() => setCurrentPage('admin-workspaces')}
+                  className={`flex items-center gap-3 px-4 py-3 rounded-xl transition ${
+                    currentPage === 'admin-workspaces' ? 'bg-purple-600 text-white' : 'hover:bg-slate-800 text-slate-400'
+                  }`}
+                >
+                  <Users className="h-5 w-5" />
+                  Workspaces Directory
+                </button>
                 <button
                   onClick={() => setCurrentPage('admin-sessions')}
                   className={`flex items-center gap-3 px-4 py-3 rounded-xl transition ${
@@ -1160,7 +1481,7 @@ export default function App() {
                     />
                   </div>
                   <div>
-                    <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">Repeat Cadence (Mandatory Bonus)</label>
+                    <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">Repeat Cadence</label>
                     <select 
                       value={repeatCadence} 
                       onChange={(e) => setRepeatCadence(e.target.value)}
@@ -1181,28 +1502,92 @@ export default function App() {
                 </form>
               </div>
 
-              {/* Simple Custom Calendar Grid */}
+              {/* Dynamic Calendar Grid */}
               <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-6">
-                <h3 className="text-lg font-bold mb-4">Calendar Grid</h3>
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-lg font-bold">
+                    {currentMonth.toLocaleString('default', { month: 'long', year: 'numeric' })}
+                  </h3>
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={() => {
+                        const prev = new Date(currentMonth);
+                        prev.setMonth(prev.getMonth() - 1);
+                        setCurrentMonth(prev);
+                      }}
+                      className="p-2 rounded bg-slate-800 hover:bg-slate-700 transition text-xs font-semibold text-slate-200"
+                    >
+                      Prev Month
+                    </button>
+                    <button 
+                      onClick={() => {
+                        const next = new Date(currentMonth);
+                        next.setMonth(next.getMonth() + 1);
+                        setCurrentMonth(next);
+                      }}
+                      className="p-2 rounded bg-slate-800 hover:bg-slate-700 transition text-xs font-semibold text-slate-200"
+                    >
+                      Next Month
+                    </button>
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-7 gap-2 text-center text-xs font-semibold text-slate-500 uppercase mb-2">
                   <div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div><div>Sun</div>
                 </div>
-                {/* Visual Representation of days */}
+
                 <div className="grid grid-cols-7 gap-2">
-                  {Array.from({ length: 30 }).map((_, i) => {
-                    const dayNum = i + 1;
-                    return (
-                      <div key={i} className="min-h-[80px] bg-slate-950 border border-slate-800 rounded-lg p-2 flex flex-col justify-between hover:border-slate-700 transition">
-                        <span className="text-xs font-bold text-slate-400">{dayNum}</span>
-                        {/* Dummy calendar indicators */}
-                        {dayNum === 15 && (
-                          <span className="bg-indigo-900/60 border border-indigo-800 text-[10px] text-indigo-300 p-0.5 rounded truncate">
-                            Scheduled Post
-                          </span>
-                        )}
-                      </div>
-                    );
-                  })}
+                  {(() => {
+                    const year = currentMonth.getFullYear();
+                    const month = currentMonth.getMonth();
+                    const firstDay = new Date(year, month, 1);
+                    const offset = (firstDay.getDay() + 6) % 7;
+                    const totalDays = new Date(year, month + 1, 0).getDate();
+                    
+                    const cells = [];
+                    for (let i = 0; i < offset; i++) {
+                      cells.push({ dayNum: null, dateStr: null });
+                    }
+                    for (let d = 1; d <= totalDays; d++) {
+                      const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+                      cells.push({ dayNum: d, dateStr });
+                    }
+                    
+                    return cells.map((cell, i) => {
+                      if (!cell.dayNum) {
+                        return <div key={`empty-${i}`} className="min-h-[90px] bg-slate-950/20 rounded-lg p-2 border border-transparent"></div>;
+                      }
+                      
+                      const dayEvents = calendarPosts.filter(p => {
+                        const pubDate = new Date(p.publish_at);
+                        const localStr = `${pubDate.getFullYear()}-${String(pubDate.getMonth() + 1).padStart(2, '0')}-${String(pubDate.getDate()).padStart(2, '0')}`;
+                        return localStr === cell.dateStr;
+                      });
+                      
+                      return (
+                        <div key={`day-${cell.dayNum}`} className="min-h-[90px] bg-slate-950 border border-slate-800 rounded-lg p-2 flex flex-col justify-between hover:border-slate-700 transition">
+                          <span className="text-xs font-bold text-slate-500">{cell.dayNum}</span>
+                          <div className="flex flex-col gap-1 overflow-y-auto max-h-[60px] scrollbar-none">
+                            {dayEvents.map(evt => {
+                              const matchingPost = posts.find(p => p.id === evt.content_id);
+                              return (
+                                <button
+                                  key={evt.id}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedCalendarEvent(evt);
+                                  }}
+                                  className="w-full text-left bg-indigo-950/80 border border-indigo-900 text-[10px] text-indigo-300 p-1 rounded truncate hover:bg-indigo-900 transition"
+                                >
+                                  {matchingPost?.title || "Scheduled Post"}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    });
+                  })()}
                 </div>
               </div>
             </div>
@@ -1210,43 +1595,84 @@ export default function App() {
 
           {currentPage === 'marketplace' && (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-              {/* Sell form */}
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 h-fit flex flex-col gap-4">
-                <h3 className="text-lg font-bold">Sell Credits</h3>
-                <form onSubmit={handleListCredits} className="flex flex-col gap-4">
-                  <div>
-                    <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">Amount to Sell</label>
-                    <input 
-                      type="number" 
-                      required 
-                      min={1} 
-                      value={sellCreditsAmount}
-                      onChange={(e) => setSellCreditsAmount(parseInt(e.target.value))}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">Price (in cents)</label>
-                    <input 
-                      type="number" 
-                      required 
-                      min={10} 
-                      value={sellCreditsPrice}
-                      onChange={(e) => setSellCreditsPrice(parseInt(e.target.value))}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 outline-none"
-                    />
-                  </div>
-                  <button 
-                    type="submit" 
-                    className="bg-indigo-600 hover:bg-indigo-500 font-semibold py-2 rounded-lg transition"
-                  >
-                    Post Listing
-                  </button>
-                </form>
+              <div className="flex flex-col gap-8">
+                {/* Sell form */}
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col gap-4">
+                  <h3 className="text-lg font-bold">Sell Credits</h3>
+                  <form onSubmit={handleListCredits} className="flex flex-col gap-4">
+                    <div>
+                      <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">Amount to Sell</label>
+                      <input 
+                        type="number" 
+                        required 
+                        min={1} 
+                        value={sellCreditsAmount}
+                        onChange={(e) => setSellCreditsAmount(parseInt(e.target.value))}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs uppercase text-slate-500 font-semibold block mb-1">Price (in cents)</label>
+                      <input 
+                        type="number" 
+                        required 
+                        min={10} 
+                        value={sellCreditsPrice}
+                        onChange={(e) => setSellCreditsPrice(parseInt(e.target.value))}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 outline-none"
+                      />
+                    </div>
+                    <button 
+                      type="submit" 
+                      className="bg-indigo-600 hover:bg-indigo-500 font-semibold py-2 rounded-lg transition"
+                    >
+                      Post Listing
+                    </button>
+                  </form>
+                </div>
               </div>
 
-              {/* listings */}
-              <div className="lg:col-span-2 flex flex-col gap-6">
+              {/* listings and credit packs */}
+              <div className="lg:col-span-2 flex flex-col gap-8">
+                {/* Buy Credit Packs directly with Stripe */}
+                {currentAccount?.role === 'owner' && (
+                  <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+                    <h3 className="text-lg font-bold mb-4 text-indigo-400">Purchase Additional Credits (Stripe Sandbox)</h3>
+                    <div className="grid grid-cols-3 gap-4">
+                      <div className="bg-slate-950 p-4 rounded-xl border border-slate-850 flex flex-col justify-between items-center gap-3">
+                        <span className="font-bold text-slate-200">100 Credits</span>
+                        <span className="text-emerald-400 font-bold">$5.00</span>
+                        <button
+                          onClick={() => handleUpgradeSubscription('credits_100')}
+                          className="w-full bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold py-2 rounded-lg transition"
+                        >
+                          Buy Pack
+                        </button>
+                      </div>
+                      <div className="bg-slate-950 p-4 rounded-xl border border-slate-850 flex flex-col justify-between items-center gap-3">
+                        <span className="font-bold text-slate-200">500 Credits</span>
+                        <span className="text-emerald-400 font-bold">$20.00</span>
+                        <button
+                          onClick={() => handleUpgradeSubscription('credits_500')}
+                          className="w-full bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold py-2 rounded-lg transition"
+                        >
+                          Buy Pack
+                        </button>
+                      </div>
+                      <div className="bg-slate-950 p-4 rounded-xl border border-slate-850 flex flex-col justify-between items-center gap-3">
+                        <span className="font-bold text-slate-200">1000 Credits</span>
+                        <span className="text-emerald-400 font-bold">$35.00</span>
+                        <button
+                          onClick={() => handleUpgradeSubscription('credits_1000')}
+                          className="w-full bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold py-2 rounded-lg transition"
+                        >
+                          Buy Pack
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
                   <h3 className="text-lg font-bold mb-4">Peer-to-Peer Marketplace listings</h3>
                   <div className="flex flex-col gap-3">
@@ -1404,6 +1830,15 @@ export default function App() {
                         <span className="text-xs font-bold uppercase bg-indigo-950 border border-indigo-900 text-indigo-300 px-2 py-0.5 rounded">
                           {member.role}
                         </span>
+                        {['owner', 'admin'].includes(currentAccount?.role) && member.role !== 'owner' && (
+                          <button
+                            onClick={() => handleRemoveMember(member.id)}
+                            className="p-1.5 rounded-lg bg-red-950/20 text-red-400 hover:bg-red-950/55 hover:text-red-300 transition"
+                            title="Remove Member"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -1518,8 +1953,444 @@ export default function App() {
               </form>
             </div>
           )}
+
+          {currentPage === 'social-integrations' && (
+            <div className="flex flex-col gap-8">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+                <h3 className="text-lg font-bold mb-4">LinkedIn Integration</h3>
+                
+                {connections.length > 0 ? (
+                  connections.map(conn => (
+                    <div key={conn.id} className="bg-slate-950 p-6 border border-slate-800 rounded-xl flex items-center justify-between">
+                      <div>
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping"></span>
+                          <span className="font-semibold text-emerald-400 capitalize">Connected to {conn.platform}</span>
+                        </div>
+                        <p className="text-xs text-slate-500 font-mono">URN: {conn.person_urn}</p>
+                        <p className="text-[10px] text-slate-600">Expires: {new Date(conn.expires_at).toLocaleDateString()}</p>
+                      </div>
+                      <button
+                        onClick={handleSocialDisconnect}
+                        className="bg-red-950/40 hover:bg-red-900/60 border border-red-900 text-red-300 text-xs px-4 py-2 rounded-lg transition"
+                      >
+                        Disconnect Account
+                      </button>
+                    </div>
+                  ))
+                ) : (
+                  <div className="bg-slate-950 p-6 border border-slate-800 rounded-xl text-center flex flex-col items-center gap-4">
+                    <p className="text-slate-400 text-sm">No active LinkedIn connection found for this workspace.</p>
+                    <button
+                      onClick={async () => {
+                        const res = await fetch(`${API_BASE}/social/connect/linkedin`, { headers: getHeaders() });
+                        const data = await res.json();
+                        if (data.authorization_url) window.location.href = data.authorization_url;
+                      }}
+                      className="bg-indigo-600 hover:bg-indigo-500 font-semibold rounded-lg px-6 py-2.5 transition text-sm"
+                    >
+                      Connect LinkedIn Account
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+                <h3 className="text-lg font-bold mb-4">Publishing Log History</h3>
+                <div className="flex flex-col gap-2">
+                  {socialHistory.map((job) => (
+                    <div key={job.id} className="bg-slate-950 p-4 rounded-xl border border-slate-800 text-xs flex flex-col gap-2">
+                      <div className="flex items-center justify-between border-b border-slate-900 pb-2">
+                        <span className="text-slate-500">Job ID: {job.id}</span>
+                        <span className="text-slate-500 font-mono">{new Date(job.created_at).toLocaleString()}</span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-400 font-mono truncate max-w-lg">Content ID: {job.content_id}</span>
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase border ${
+                          job.status === 'published' || job.status === 'success'
+                            ? 'bg-emerald-950/60 border-emerald-900 text-emerald-400'
+                            : job.status === 'failed'
+                            ? 'bg-red-950/60 border-red-900 text-red-400'
+                            : 'bg-yellow-950/60 border-yellow-900 text-yellow-400'
+                        }`}>
+                          {job.status}
+                        </span>
+                      </div>
+                      {job.error_reason && (
+                        <p className="text-red-400 text-[10px] mt-1 italic">Reason: {job.error_reason}</p>
+                      )}
+                    </div>
+                  ))}
+                  {socialHistory.length === 0 && (
+                    <p className="text-slate-500 italic text-sm text-center py-4">No publishing history recorded.</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {currentPage === 'admin-workspaces' && (
+            <div className="flex flex-col gap-8">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+                <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
+                  <Shield className="h-5 w-5 text-purple-400" />
+                  Workspaces Directory (Platform Overview)
+                </h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm text-slate-400">
+                    <thead className="text-xs uppercase bg-slate-950 text-slate-500 border-b border-slate-850">
+                      <tr>
+                        <th className="px-4 py-3">Workspace Name</th>
+                        <th className="px-4 py-3">Type</th>
+                        <th className="px-4 py-3">Plan</th>
+                        <th className="px-4 py-3">Members</th>
+                        <th className="px-4 py-3">Credits</th>
+                        <th className="px-4 py-3">Tokens Used</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-850">
+                      {adminWorkspaces.map(ws => (
+                        <tr 
+                          key={ws.account_id}
+                          onClick={() => setSelectedWorkspaceDetails(ws)}
+                          className="hover:bg-slate-800/40 cursor-pointer transition"
+                        >
+                          <td className="px-4 py-3.5 font-semibold text-slate-200">{ws.name}</td>
+                          <td className="px-4 py-3.5 capitalize">{ws.type}</td>
+                          <td className="px-4 py-3.5">
+                            <span className="text-xs font-bold uppercase bg-indigo-950 border border-indigo-900 text-indigo-300 px-2 py-0.5 rounded">
+                              {ws.plan_tier}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3.5">{ws.members_count}</td>
+                          <td className="px-4 py-3.5 font-mono text-emerald-400">{ws.credit_balance}</td>
+                          <td className="px-4 py-3.5 font-mono text-blue-400">{ws.total_tokens_used.toLocaleString()}</td>
+                        </tr>
+                      ))}
+                      {adminWorkspaces.length === 0 && (
+                        <tr>
+                          <td colSpan={6} className="text-center py-6 italic text-slate-500">No workspaces found.</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {selectedWorkspaceDetails && (
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col gap-4">
+                  <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                    <h3 className="text-lg font-bold text-indigo-400">Workspace Detailed Metrics</h3>
+                    <button 
+                      onClick={() => setSelectedWorkspaceDetails(null)}
+                      className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs font-mono">
+                    <div className="bg-slate-950 p-3 rounded-lg border border-slate-850">
+                      <span className="text-slate-500 block text-[10px] mb-1">WORKSPACE ID</span>
+                      <span className="text-slate-300">{selectedWorkspaceDetails.account_id}</span>
+                    </div>
+                    <div className="bg-slate-950 p-3 rounded-lg border border-slate-850">
+                      <span className="text-slate-500 block text-[10px] mb-1">PLAN TIER</span>
+                      <span className="text-indigo-400 uppercase font-bold">{selectedWorkspaceDetails.plan_tier}</span>
+                    </div>
+                    <div className="bg-slate-950 p-3 rounded-lg border border-slate-850">
+                      <span className="text-slate-500 block text-[10px] mb-1">CREDITS BALANCE</span>
+                      <span className="text-emerald-400 font-bold">{selectedWorkspaceDetails.credit_balance}</span>
+                    </div>
+                    <div className="bg-slate-950 p-3 rounded-lg border border-slate-850">
+                      <span className="text-slate-500 block text-[10px] mb-1">TOTAL TOKENS</span>
+                      <span className="text-blue-400 font-bold">{selectedWorkspaceDetails.total_tokens_used}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </main>
       </div>
+
+      {/* STRIPE SANDBOX SIMULATOR MODAL */}
+      {mockCheckout && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 max-w-md w-full shadow-2xl flex flex-col gap-5 animate-in fade-in zoom-in duration-200">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <h3 className="text-lg font-bold flex items-center gap-2 text-indigo-400">
+                <Sparkles className="h-5 w-5" />
+                Stripe Card Checkout (Sandbox)
+              </h3>
+              <button 
+                onClick={() => {
+                  setMockCheckout(null);
+                  setMockCardNumber('');
+                  setMockCardExpiry('');
+                  setMockCardCvc('');
+                  setMockCardName('');
+                }}
+                className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            
+            <div className="text-xs text-slate-400 flex flex-col gap-2">
+              <p>You have entered the <strong>Stripe Test Sandbox Environment</strong>. Select the options below to simulate the transaction:</p>
+              <div className="bg-slate-950 p-3 rounded-lg border border-slate-850 flex flex-col gap-1.5 font-semibold text-slate-300">
+                <div className="flex justify-between">
+                  <span>Product:</span>
+                  <span className="text-slate-200 capitalize">
+                    {mockCheckout.plan_tier.startsWith("credits_") 
+                      ? `${mockCheckout.plan_tier.replace("credits_", "")} Credits Pack`
+                      : `${mockCheckout.plan_tier} Plan Subscription`
+                    }
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Amount due:</span>
+                  <span className="text-emerald-400">
+                    {mockCheckout.plan_tier.startsWith("credits_") 
+                      ? (mockCheckout.plan_tier === "credits_100" ? "$5.00" : mockCheckout.plan_tier === "credits_500" ? "$20.00" : "$35.00")
+                      : (mockCheckout.plan_tier === "pro" ? "$19.00/mo" : "$49.00/mo")
+                    }
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Mock Card Form */}
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              const cleanCard = mockCardNumber.replace(/\s+/g, '');
+              if (cleanCard.length < 16) {
+                setError("Invalid card number. Must be 16 digits. (Try 4242 4242 4242 4242)");
+                return;
+              }
+              if (!mockCardExpiry || !mockCardCvc) {
+                setError("Please fill out all card details.");
+                return;
+              }
+              // Clear inputs
+              setMockCardNumber('');
+              setMockCardExpiry('');
+              setMockCardCvc('');
+              setMockCardName('');
+              handleAuthorizeSimulatedPayment();
+            }} className="flex flex-col gap-4">
+              <div>
+                <label className="text-[10px] uppercase text-slate-500 font-semibold block mb-1">Cardholder Name</label>
+                <input 
+                  type="text" 
+                  required
+                  placeholder="Jane Doe"
+                  value={mockCardName}
+                  onChange={(e) => setMockCardName(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 outline-none text-sm focus:border-indigo-500 transition"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] uppercase text-slate-500 font-semibold block mb-1">Card Number</label>
+                <input 
+                  type="text" 
+                  required
+                  placeholder="4242 4242 4242 4242"
+                  value={mockCardNumber}
+                  onChange={(e) => {
+                    const val = e.target.value.replace(/\D/g, '').slice(0, 16);
+                    const formatted = val.replace(/(\d{4})(?=\d)/g, '$1 ');
+                    setMockCardNumber(formatted);
+                  }}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 outline-none text-sm font-mono focus:border-indigo-500 transition"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-[10px] uppercase text-slate-500 font-semibold block mb-1">Expiration (MM/YY)</label>
+                  <input 
+                    type="text" 
+                    required
+                    placeholder="12/28"
+                    value={mockCardExpiry}
+                    onChange={(e) => {
+                      const val = e.target.value.replace(/\D/g, '').slice(0, 4);
+                      const formatted = val.length > 2 ? `${val.slice(0, 2)}/${val.slice(2)}` : val;
+                      setMockCardExpiry(formatted);
+                    }}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 outline-none text-sm font-mono focus:border-indigo-500 transition"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] uppercase text-slate-500 font-semibold block mb-1">CVC</label>
+                  <input 
+                    type="password" 
+                    required
+                    placeholder="123"
+                    value={mockCardCvc}
+                    onChange={(e) => setMockCardCvc(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 outline-none text-sm font-mono focus:border-indigo-500 transition"
+                  />
+                </div>
+              </div>
+              <div className="flex gap-4 mt-2">
+                <button
+                  type="submit"
+                  className="flex-1 bg-indigo-600 hover:bg-indigo-500 font-semibold py-2.5 rounded-xl transition text-sm"
+                >
+                  Pay & Authorize
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMockCheckout(null);
+                    setMockCardNumber('');
+                    setMockCardExpiry('');
+                    setMockCardCvc('');
+                    setMockCardName('');
+                    setError("Stripe Checkout was cancelled.");
+                  }}
+                  className="flex-1 bg-slate-800 hover:bg-slate-750 font-semibold py-2.5 rounded-xl border border-slate-700 transition text-sm hover:text-slate-200"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* PAYMENT CELEBRATION / SUCCESS MODAL */}
+      {successModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 max-w-sm w-full shadow-2xl flex flex-col items-center gap-6 text-center animate-in fade-in zoom-in duration-200">
+            <div className="w-16 h-16 rounded-full bg-emerald-950 border border-emerald-500 flex items-center justify-center text-emerald-400 text-3xl">
+              ✓
+            </div>
+            <div>
+              <h3 className="text-xl font-bold mb-2">Payment Complete!</h3>
+              <p className="text-slate-400 text-xs">{successModal}</p>
+            </div>
+            <div className="flex gap-2 w-full">
+              <button
+                onClick={() => {
+                  setSuccessModal('');
+                  fetchCreditsBalance();
+                }}
+                className="flex-1 bg-emerald-600 hover:bg-emerald-500 font-semibold py-2.5 rounded-xl transition text-xs"
+              >
+                Close & View Balance
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CONFIRMATION DIALOG MODAL */}
+      {confirmAction && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 max-w-sm w-full shadow-2xl flex flex-col items-center gap-6 text-center animate-in fade-in zoom-in duration-200">
+            <div className="w-12 h-12 rounded-full bg-red-950/60 border border-red-500 flex items-center justify-center text-red-400 text-xl font-bold">
+              !
+            </div>
+            <div>
+              <h3 className="text-lg font-bold mb-2">Confirm Action</h3>
+              <p className="text-slate-400 text-xs">{confirmAction.message}</p>
+            </div>
+            <div className="flex gap-4 w-full">
+              <button
+                onClick={confirmAction.onConfirm}
+                className="flex-1 bg-red-600 hover:bg-red-500 font-semibold py-2.5 rounded-xl transition text-xs text-white"
+              >
+                Confirm
+              </button>
+              <button
+                onClick={() => setConfirmAction(null)}
+                className="flex-1 bg-slate-800 hover:bg-slate-700 font-semibold py-2.5 rounded-xl border border-slate-700 transition text-xs text-slate-300"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CALENDAR EVENT DETAIL MODAL */}
+      {selectedCalendarEvent && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          {(() => {
+            const matchingPost = posts.find(p => p.id === selectedCalendarEvent.content_id);
+            return (
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-md w-full shadow-2xl flex flex-col gap-6 animate-in fade-in zoom-in duration-200">
+                <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                  <h3 className="text-lg font-bold text-indigo-400">Scheduled Item Details</h3>
+                  <button 
+                    onClick={() => {
+                      setSelectedCalendarEvent(null);
+                      setRescheduleDate('');
+                    }}
+                    className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+                
+                <div className="flex flex-col gap-3 text-xs">
+                  <div>
+                    <span className="text-slate-500 block uppercase font-bold text-[10px] mb-1">Post Title</span>
+                    <p className="text-slate-200 font-semibold text-sm">{matchingPost?.title || "Untitled Post"}</p>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block uppercase font-bold text-[10px] mb-1">Post Body Preview</span>
+                    <p className="text-slate-400 italic line-clamp-3 bg-slate-950 p-2.5 rounded-lg border border-slate-850">{matchingPost?.body || "No body content"}</p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <span className="text-slate-500 block uppercase font-bold text-[10px] mb-1">Publish Time</span>
+                      <p className="text-slate-300 font-mono font-semibold">{new Date(selectedCalendarEvent.publish_at).toLocaleString()}</p>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block uppercase font-bold text-[10px] mb-1">Cadence</span>
+                      <span className="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-indigo-950 text-indigo-400 border border-indigo-900">
+                        {selectedCalendarEvent.repeat_cadence || "none"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Reschedule Form */}
+                <form onSubmit={handleReschedulePost} className="border-t border-slate-800 pt-4 flex flex-col gap-3">
+                  <span className="text-slate-500 block uppercase font-bold text-[10px]">Reschedule Publication</span>
+                  <div className="flex gap-2">
+                    <input
+                      type="datetime-local"
+                      required
+                      value={rescheduleDate}
+                      onChange={(e) => setRescheduleDate(e.target.value)}
+                      className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 outline-none text-xs text-slate-200"
+                    />
+                    <button
+                      type="submit"
+                      className="bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold px-4 py-2 rounded-lg transition"
+                    >
+                      Reschedule
+                    </button>
+                  </div>
+                </form>
+
+                <div className="border-t border-slate-800 pt-4 flex justify-end gap-2">
+                  <button
+                    onClick={() => handleCancelSchedule(selectedCalendarEvent.id)}
+                    className="bg-red-950/40 hover:bg-red-900/60 border border-red-900 text-red-300 text-xs px-4 py-2 rounded-lg transition font-semibold"
+                  >
+                    Cancel Scheduled Post
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
     </div>
   );
 }
