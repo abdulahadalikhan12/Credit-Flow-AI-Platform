@@ -8,3 +8,4 @@ alembic
 aio-pika
 playwright
 motor
+httpx
