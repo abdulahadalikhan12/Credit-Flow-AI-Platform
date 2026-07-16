@@ -282,3 +282,18 @@ async def internal_get_user_accounts(
             "plan_tier": row.plan_tier
         })
     return accounts
+
+@router.get("/admin/all", response_model=List[AccountOut])
+async def admin_list_all_accounts(
+    role: str = Depends(get_user_role),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    List all accounts on the platform. Restricted to superadmin.
+    """
+    if role != "superadmin":
+        raise HTTPException(status_code=403, detail="SuperAdmin privileges required")
+    q = select(Account).order_by(Account.created_at.desc())
+    res = await db.execute(q)
+    return res.scalars().all()
+

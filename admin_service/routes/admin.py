@@ -160,3 +160,74 @@ async def get_workspace_summary(
             pass
 
     return summary
+
+@router.get("/workspaces")
+async def list_workspaces_with_summaries(
+    x_user_role: str = Header(None),
+    _ = Depends(require_superadmin)
+):
+    """
+    SuperAdmin endpoint to list all workspaces on the platform with aggregated summary metrics.
+    """
+    user_url = os.getenv("USER_SERVICE_URL", "http://user_service:8002")
+    credits_url = os.getenv("CREDITS_SERVICE_URL", "http://credits_service:8004")
+    usage_url = os.getenv("USAGE_SERVICE_URL", "http://usage_service:8005")
+
+    async with httpx.AsyncClient() as client:
+        try:
+            # 1. Fetch all accounts
+            headers = {"X-User-Role": "superadmin"}
+            resp = await client.get(f"{user_url}/api/v1/accounts/admin/all", headers=headers, timeout=5.0)
+            if resp.status_code != 200:
+                raise HTTPException(status_code=resp.status_code, detail=f"User service error: {resp.text}")
+            accounts = resp.json()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to fetch accounts from User Service: {e}")
+
+        # 2. Iterate and aggregate metrics
+        summaries = []
+        for acc in accounts:
+            account_id = acc["id"]
+            acc_headers = {
+                "X-Account-Id": str(account_id),
+                "X-User-Role": "superadmin"
+            }
+            summary = {
+                "account_id": str(account_id),
+                "name": acc["name"],
+                "type": acc["type"],
+                "plan_tier": acc["plan_tier"],
+                "created_at": acc.get("created_at"),
+                "members_count": 0,
+                "credit_balance": 0,
+                "total_tokens_used": 0
+            }
+            
+            # Fetch Members count
+            try:
+                r = await client.get(f"{user_url}/api/v1/accounts/members", headers=acc_headers, timeout=2.0)
+                if r.status_code == 200:
+                    summary["members_count"] = len(r.json())
+            except Exception:
+                pass
+
+            # Fetch Credit Balance
+            try:
+                r = await client.get(f"{credits_url}/api/v1/credits/balance", headers=acc_headers, timeout=2.0)
+                if r.status_code == 200:
+                    summary["credit_balance"] = r.json().get("balance", 0)
+            except Exception:
+                pass
+
+            # Fetch Usage summary
+            try:
+                r = await client.get(f"{usage_url}/api/v1/usage/summary", headers=acc_headers, timeout=2.0)
+                if r.status_code == 200:
+                    summary["total_tokens_used"] = r.json().get("total_tokens", 0)
+            except Exception:
+                pass
+
+            summaries.append(summary)
+
+    return summaries
+
